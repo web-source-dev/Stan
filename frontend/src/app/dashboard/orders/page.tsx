@@ -3,9 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { DashboardShell } from '@/components/DashboardShell';
-import { Card, Badge, EmptyState, Skeleton, Button, FilterChips, Field, Select } from '@/components/ui';
-import { IconBag, IconDownload, IconSettings, IconDollar } from '@/components/icons';
+import { Skeleton, Field, Select, Badge } from '@/components/ui';
+import { IconDownload, IconSettings, IconPlus, IconHelp } from '@/components/icons';
 import { formatPrice } from '@/lib/types';
+import { cn } from '@/lib/cn';
 
 interface Order {
   id: string;
@@ -14,8 +15,18 @@ interface Order {
   currency: string;
   status: string;
   fulfilmentStatus: string;
+  discountCode?: string;
   product: { title: string; slug: string; kind?: string } | null;
   createdAt: string;
+}
+
+/** Demo apps process a single method; derive a label so the filter has values. */
+function paymentOf(o: Order): 'Card' | 'Free' {
+  return o.amountCents > 0 ? 'Card' : 'Free';
+}
+
+function fmtDate(iso: string) {
+  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 function statusTone(s: string): 'success' | 'warn' | 'danger' | 'neutral' {
@@ -25,16 +36,12 @@ function statusTone(s: string): 'success' | 'warn' | 'danger' | 'neutral' {
   return 'neutral';
 }
 
-function fmtDate(iso: string) {
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
 /* ------------------------------------------------------------------ */
 /* Revenue area chart (dependency-free SVG)                            */
 /* ------------------------------------------------------------------ */
 
 function RevenueChart({ orders }: { orders: Order[] }) {
-  const days = 14;
+  const days = 28;
   const series = useMemo(() => {
     const buckets: { label: string; ms: number; cents: number }[] = [];
     const today = new Date();
@@ -42,11 +49,7 @@ function RevenueChart({ orders }: { orders: Order[] }) {
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date(today);
       d.setDate(today.getDate() - i);
-      buckets.push({
-        label: d.toLocaleDateString(undefined, { month: 'short', day: '2-digit' }),
-        ms: d.getTime(),
-        cents: 0,
-      });
+      buckets.push({ label: d.toLocaleDateString(undefined, { month: 'short', day: '2-digit' }), ms: d.getTime(), cents: 0 });
     }
     for (const o of orders) {
       if (o.status !== 'paid') continue;
@@ -58,34 +61,30 @@ function RevenueChart({ orders }: { orders: Order[] }) {
     return buckets;
   }, [orders]);
 
-  const W = 720;
-  const H = 180;
+  const W = 960;
+  const H = 200;
   const max = Math.max(1, ...series.map((s) => s.cents));
   const step = series.length > 1 ? W / (series.length - 1) : W;
-  const pts = series.map((s, i) => {
-    const x = i * step;
-    const y = H - (s.cents / max) * (H - 20) - 8;
-    return { x, y };
-  });
+  const pts = series.map((s, i) => ({ x: i * step, y: H - (s.cents / max) * (H - 24) - 10 }));
   const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
   const area = `${line} L${W},${H} L0,${H} Z`;
-  const ticks = [0, Math.floor(days / 2), days - 1];
+  const tickIdx = Array.from({ length: 10 }, (_, i) => Math.round((i / 9) * (series.length - 1)));
 
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="h-44 w-full" preserveAspectRatio="none">
+      <svg viewBox={`0 0 ${W} ${H}`} className="h-[200px] w-full" preserveAspectRatio="none">
         <defs>
           <linearGradient id="rev" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#5b54e8" stopOpacity="0.22" />
-            <stop offset="100%" stopColor="#5b54e8" stopOpacity="0" />
+            <stop offset="0%" stopColor="#6355fa" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="#6355fa" stopOpacity="0" />
           </linearGradient>
         </defs>
         <path d={area} fill="url(#rev)" />
-        <path d={line} fill="none" stroke="#5b54e8" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        <path d={line} fill="none" stroke="#6355fa" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
       </svg>
-      <div className="mt-1 flex justify-between px-1 text-2xs text-neutral-400">
-        {ticks.map((t) => (
-          <span key={t}>{series[t]?.label}</span>
+      <div className="mt-2 flex justify-between text-[11px] font-medium text-neutral-400">
+        {tickIdx.map((t, i) => (
+          <span key={i}>{series[t]?.label}</span>
         ))}
       </div>
     </div>
@@ -96,29 +95,58 @@ function RevenueChart({ orders }: { orders: Order[] }) {
 /* Payout panel                                                        */
 /* ------------------------------------------------------------------ */
 
-function PayoutPanel() {
+function PayoutPanel({ summary }: { summary: { revenueCents: number; orders: number } | null }) {
+  const [showBreakdown, setShowBreakdown] = useState(false);
+  const gross = summary?.revenueCents ?? 0;
   return (
-    <Card className="bg-surface-subtle">
-      <div className="flex items-start justify-between">
+    <div className="flex h-full flex-col rounded-3xl bg-white p-6 shadow-[0_12px_40px_-12px_rgba(15,15,25,0.12),0_2px_8px_rgba(15,15,25,0.05)]">
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">Available for cashout</div>
-          <div className="mt-1 text-2xl font-bold tracking-tight">{formatPrice(0)}</div>
+          <div className="text-[13px] font-medium text-neutral-500">Available for Cashout</div>
+          <div className="mt-1 text-[28px] font-bold leading-none tracking-tight text-[#1a1c3a]">{formatPrice(0)}</div>
         </div>
         <div className="text-right">
-          <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">Available soon</div>
-          <div className="mt-1 text-sm font-semibold text-neutral-700">{formatPrice(0)}</div>
+          <div className="text-[13px] font-medium text-neutral-500">Available Soon</div>
+          <div className="mt-1 text-[15px] font-semibold text-neutral-400">{formatPrice(0)}</div>
         </div>
       </div>
-      <Button variant="secondary" fullWidth className="mt-4" disabled>
-        <IconDollar size={16} /> Cash Out
-      </Button>
-      <a
-        href="/dashboard/settings"
-        className="mt-3 flex items-center justify-center gap-1.5 text-sm font-medium text-brand-600 hover:text-brand-700"
-      >
-        <IconSettings size={15} /> Payout settings
-      </a>
-    </Card>
+      <div className="mt-2 text-right">
+        <button
+          type="button"
+          onClick={() => setShowBreakdown((v) => !v)}
+          className="text-sm font-semibold text-brand-600 hover:text-brand-700"
+        >
+          {showBreakdown ? 'Hide breakdown' : 'View breakdown'}
+        </button>
+      </div>
+
+      {showBreakdown && (
+        <dl className="mt-3 space-y-2 rounded-2xl bg-surface-subtle p-4 text-sm">
+          <div className="flex justify-between"><dt className="text-neutral-500">Revenue (last 30 days)</dt><dd className="font-semibold text-[#1a1c3a]">{formatPrice(gross)}</dd></div>
+          <div className="flex justify-between"><dt className="text-neutral-500">Available for cashout</dt><dd className="font-semibold text-[#1a1c3a]">{formatPrice(0)}</dd></div>
+          <div className="flex justify-between"><dt className="text-neutral-500">Available soon</dt><dd className="font-semibold text-[#1a1c3a]">{formatPrice(0)}</dd></div>
+          <div className="flex justify-between border-t border-line pt-2"><dt className="text-neutral-500">Paid out to date</dt><dd className="font-semibold text-[#1a1c3a]">{formatPrice(0)}</dd></div>
+        </dl>
+      )}
+
+      {/* Spacer pushes the actions to the bottom so the card fills its row. */}
+      <div className="mt-auto pt-6">
+        <button
+          type="button"
+          disabled
+          title="Connect a payout account in Settings to cash out"
+          className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#eceef3] py-4 text-[15px] font-bold text-neutral-400"
+        >
+          <IconPlus size={18} /> Cash Out
+        </button>
+        <a
+          href="/dashboard/settings?tab=payments"
+          className="mt-4 flex items-center justify-center gap-1.5 text-sm font-semibold text-brand-600 hover:text-brand-700"
+        >
+          <IconSettings size={16} /> Settings
+        </a>
+      </div>
+    </div>
   );
 }
 
@@ -126,12 +154,14 @@ function PayoutPanel() {
 /* Filters                                                             */
 /* ------------------------------------------------------------------ */
 
-type FilterKey = 'date' | 'email' | 'product' | 'amount' | 'status';
+type FilterKey = 'date' | 'email' | 'product' | 'amount' | 'discount' | 'payment' | 'status';
 const FILTER_CHIPS: { value: FilterKey; label: string }[] = [
-  { value: 'date', label: 'Date' },
+  { value: 'date', label: 'Date & Time' },
   { value: 'email', label: 'Email' },
   { value: 'product', label: 'Product' },
   { value: 'amount', label: 'Amount' },
+  { value: 'discount', label: 'Discount Code' },
+  { value: 'payment', label: 'Payment Method' },
   { value: 'status', label: 'Status' },
 ];
 
@@ -142,11 +172,13 @@ interface FilterState {
   minAmount: string;
   from: string;
   to: string;
+  discount: string;
+  payment: string;
 }
-const EMPTY_FILTERS: FilterState = { email: '', product: '', status: '', minAmount: '', from: '', to: '' };
+const EMPTY_FILTERS: FilterState = { email: '', product: '', status: '', minAmount: '', from: '', to: '', discount: '', payment: '' };
 
 function toCsv(orders: Order[]): string {
-  const head = ['Date', 'Email', 'Product', 'Amount', 'Status', 'Fulfilment'];
+  const head = ['Date', 'Email', 'Product', 'Amount', 'Status', 'Fulfilment', 'Discount Code', 'Payment Method'];
   const rows = orders.map((o) => [
     new Date(o.createdAt).toISOString(),
     o.buyerEmail,
@@ -154,17 +186,39 @@ function toCsv(orders: Order[]): string {
     (o.amountCents / 100).toFixed(2),
     o.status,
     o.fulfilmentStatus,
+    o.discountCode ?? '',
+    paymentOf(o),
   ]);
-  return [head, ...rows]
-    .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
-    .join('\n');
+  return [head, ...rows].map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+}
+
+/** Purple "$" smiley empty-state illustration. */
+function EmptyTransactions() {
+  return (
+    <div className="py-16 text-center">
+      <div className="relative mx-auto mb-6 h-[104px] w-[120px]">
+        <span className="absolute left-7 top-0 -rotate-[14deg] text-[30px] font-extrabold text-brand-600">$</span>
+        <span className="absolute left-2 top-9 h-3 w-1 -rotate-[20deg] rounded-full bg-brand-500/70" />
+        <span className="absolute right-3 top-7 h-2.5 w-1 rotate-[20deg] rounded-full bg-brand-500/70" />
+        <div className="absolute bottom-0 left-1/2 grid h-[80px] w-[80px] -translate-x-1/2 place-items-center rounded-full bg-brand-600">
+          <svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden>
+            <ellipse cx="16.5" cy="18" rx="2.4" ry="4.2" fill="#fff" />
+            <ellipse cx="27.5" cy="18" rx="2.4" ry="4.2" fill="#fff" />
+            <path d="M14 26.5c1.8 3.2 5 3.6 8 3.6s6.2-.4 8-3.6" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" fill="none" />
+          </svg>
+        </div>
+      </div>
+      <h3 className="text-xl font-bold text-[#1a1c3a]">No Transactions Matching Filters</h3>
+      <p className="mt-1.5 text-sm font-medium text-brand-600">Update filters to find what you&apos;re looking for!</p>
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
 
-function IncomeView() {
+function IncomeContent({ initialOrders }: { initialOrders?: Order[] }) {
   const { authedRequest } = useAuth();
-  const [orders, setOrders] = useState<Order[] | null>(null);
+  const [orders, setOrders] = useState<Order[] | null>(initialOrders ?? null);
   const [summary, setSummary] = useState<{ revenueCents: number; orders: number } | null>(null);
   const [active, setActive] = useState<FilterKey[]>([]);
   const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS);
@@ -172,21 +226,18 @@ function IncomeView() {
   const load = useCallback(async () => {
     const res = await authedRequest<{ orders: Order[] }>('/api/orders');
     setOrders(res.orders);
-    authedRequest<{ revenueCents: number; orders: number; publishedProducts: number }>('/api/orders/summary')
+    authedRequest<{ revenueCents: number; orders: number }>('/api/orders/summary')
       .then(setSummary)
       .catch(() => {});
   }, [authedRequest]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (initialOrders) return; void load(); }, [load, initialOrders]);
 
   const productOptions = useMemo(
     () => Array.from(new Set((orders ?? []).map((o) => o.product?.title).filter(Boolean) as string[])),
     [orders],
   );
-  const statusOptions = useMemo(
-    () => Array.from(new Set((orders ?? []).map((o) => o.status))),
-    [orders],
-  );
+  const statusOptions = useMemo(() => Array.from(new Set((orders ?? []).map((o) => o.status))), [orders]);
 
   const filtered = useMemo(() => {
     if (!orders) return [];
@@ -197,6 +248,8 @@ function IncomeView() {
       if (active.includes('amount') && filters.minAmount && o.amountCents < Math.round(parseFloat(filters.minAmount) * 100)) return false;
       if (active.includes('date') && filters.from && new Date(o.createdAt) < new Date(filters.from)) return false;
       if (active.includes('date') && filters.to && new Date(o.createdAt) > new Date(filters.to + 'T23:59:59')) return false;
+      if (active.includes('discount') && filters.discount && !(o.discountCode ?? '').toLowerCase().includes(filters.discount.toLowerCase())) return false;
+      if (active.includes('payment') && filters.payment && paymentOf(o) !== filters.payment) return false;
       return true;
     });
   }, [orders, active, filters]);
@@ -215,126 +268,149 @@ function IncomeView() {
     URL.revokeObjectURL(url);
   }
 
+  const hasFilterInputs = active.length > 0;
+
   return (
-    <DashboardShell
-      title="Income"
-      subtitle="Your revenue, payouts and every order in one place."
-      maxWidth="max-w-6xl"
-    >
+    <>
       {/* Revenue + payout */}
-      <div className="grid gap-5 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <div className="text-xs font-medium uppercase tracking-wide text-neutral-500">Total revenue · 30d</div>
-          <div className="mt-1 text-4xl font-bold tracking-tight">
-            {summary ? formatPrice(summary.revenueCents) : <span className="text-neutral-300">$0.00</span>}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="rounded-3xl bg-white p-7 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">
+          <div className="flex items-center gap-1.5 text-sm font-medium text-neutral-500">
+            Total Revenue
+            <span title="Total paid revenue over the last 30 days" className="inline-flex text-neutral-400">
+              <IconHelp size={15} />
+            </span>
           </div>
-          <div className="mt-4">
-            {orders === null ? <Skeleton className="h-44 w-full" /> : <RevenueChart orders={orders} />}
+          <div className="mt-1 text-[64px] font-bold leading-[1.05] tracking-tight text-[#1a1c3a]">
+            {summary ? formatPrice(summary.revenueCents) : '$0.00'}
           </div>
-        </Card>
-        <PayoutPanel />
+          <div className="mt-10">
+            {orders === null ? <Skeleton className="h-[200px] w-full" /> : <RevenueChart orders={orders} />}
+          </div>
+        </div>
+        <PayoutPanel summary={summary} />
       </div>
 
       {/* Latest orders */}
-      <div className="mt-8">
+      <div className="mt-6 rounded-3xl bg-white p-7 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold tracking-tight">Latest Orders</h2>
-          <Button variant="secondary" size="sm" onClick={download} disabled={!filtered.length}>
+          <h2 className="text-xl font-bold tracking-tight text-[#1a1c3a]">Latest Orders</h2>
+          <button
+            type="button"
+            onClick={download}
+            disabled={orders === null}
+            className="inline-flex items-center gap-1.5 rounded-full bg-[#f1f1f5] px-4 py-2 text-sm font-semibold text-neutral-500 transition hover:bg-[#e7e7ec] disabled:opacity-60"
+          >
             <IconDownload size={15} /> Download CSV
-          </Button>
+          </button>
         </div>
 
-        <div className="mt-4">
-          <FilterChips chips={FILTER_CHIPS} active={active} onToggle={toggleChip} />
+        <div className="mt-5 flex flex-wrap gap-2.5">
+          {FILTER_CHIPS.map((c) => {
+            const on = active.includes(c.value);
+            return (
+              <button
+                key={c.value}
+                type="button"
+                onClick={() => toggleChip(c.value)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-semibold transition',
+                  on ? 'bg-brand-600 text-white' : 'bg-brand-50 text-brand-600 hover:bg-brand-100',
+                )}
+              >
+                <span className="text-base leading-none">{on ? '×' : '+'}</span>
+                {c.label}
+              </button>
+            );
+          })}
         </div>
 
-        {active.length > 0 && (
-          <Card className="mt-3" padded>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {active.includes('email') && (
-                <Field label="Email contains" value={filters.email} onChange={(e) => setFilters({ ...filters, email: e.target.value })} placeholder="name@email.com" />
-              )}
-              {active.includes('product') && (
-                <Select label="Product" value={filters.product} onChange={(e) => setFilters({ ...filters, product: e.target.value })}>
-                  <option value="">Any product</option>
-                  {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
-                </Select>
-              )}
-              {active.includes('status') && (
-                <Select label="Status" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
-                  <option value="">Any status</option>
-                  {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-                </Select>
-              )}
-              {active.includes('amount') && (
-                <Field label="Min amount ($)" type="number" min="0" value={filters.minAmount} onChange={(e) => setFilters({ ...filters, minAmount: e.target.value })} placeholder="0" />
-              )}
-              {active.includes('date') && (
-                <>
-                  <Field label="From" type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} />
-                  <Field label="To" type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} />
-                </>
-              )}
-            </div>
-          </Card>
+        {hasFilterInputs && (
+          <div className="mt-4 grid gap-3 rounded-2xl border border-line bg-surface-subtle p-4 sm:grid-cols-2 lg:grid-cols-3">
+            {active.includes('email') && (
+              <Field label="Email contains" value={filters.email} onChange={(e) => setFilters({ ...filters, email: e.target.value })} placeholder="name@email.com" />
+            )}
+            {active.includes('product') && (
+              <Select label="Product" value={filters.product} onChange={(e) => setFilters({ ...filters, product: e.target.value })}>
+                <option value="">Any product</option>
+                {productOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+              </Select>
+            )}
+            {active.includes('status') && (
+              <Select label="Status" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+                <option value="">Any status</option>
+                {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </Select>
+            )}
+            {active.includes('amount') && (
+              <Field label="Min amount ($)" type="number" min="0" value={filters.minAmount} onChange={(e) => setFilters({ ...filters, minAmount: e.target.value })} placeholder="0" />
+            )}
+            {active.includes('date') && (
+              <>
+                <Field label="From" type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} />
+                <Field label="To" type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} />
+              </>
+            )}
+            {active.includes('discount') && (
+              <Field label="Discount code contains" value={filters.discount} onChange={(e) => setFilters({ ...filters, discount: e.target.value })} placeholder="e.g. SUMMER20" />
+            )}
+            {active.includes('payment') && (
+              <Select label="Payment method" value={filters.payment} onChange={(e) => setFilters({ ...filters, payment: e.target.value })}>
+                <option value="">Any method</option>
+                <option value="Card">Card</option>
+                <option value="Free">Free</option>
+              </Select>
+            )}
+          </div>
         )}
 
-        <div className="mt-4">
+        {/* Table */}
+        <div className="mt-6 overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="text-left text-[15px] font-bold text-[#1a1c3a]">
+                <th className="pb-2 pr-4">Date</th>
+                <th className="pb-2 pr-4">Email</th>
+                <th className="pb-2 pr-4">Product</th>
+                <th className="pb-2 text-right">Amount</th>
+              </tr>
+            </thead>
+            {orders !== null && filtered.length > 0 && (
+              <tbody className="text-sm">
+                {filtered.map((o) => (
+                  <tr key={o.id} className="border-t border-line">
+                    <td className="whitespace-nowrap py-3 pr-4 text-neutral-500">{fmtDate(o.createdAt)}</td>
+                    <td className="py-3 pr-4 font-medium text-[#1a1c3a]">{o.buyerEmail}</td>
+                    <td className="py-3 pr-4 text-neutral-600">
+                      <span className="inline-flex items-center gap-2">
+                        {o.product?.title ?? '—'}
+                        {o.product?.kind && o.product.kind !== 'product' && <Badge tone="neutral">{o.product.kind}</Badge>}
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap py-3 text-right font-semibold text-[#1a1c3a]">
+                      {o.amountCents ? formatPrice(o.amountCents, o.currency) : 'Free'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            )}
+          </table>
+
           {orders === null ? (
-            <Skeleton className="h-64 w-full" />
+            <Skeleton className="mt-4 h-48 w-full" />
           ) : filtered.length === 0 ? (
-            <EmptyState
-              icon={<IconBag size={24} />}
-              title={orders.length === 0 ? 'No orders yet' : 'No transactions matching filters'}
-              description={
-                orders.length === 0
-                  ? 'When someone buys a product, course or paid booking, it shows up here.'
-                  : 'Update or clear your filters to find what you’re looking for.'
-              }
-            />
-          ) : (
-            <Card padded={false} className="overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="border-b border-line bg-surface-subtle text-left text-xs uppercase tracking-wide text-neutral-500">
-                    <tr>
-                      <th className="px-5 py-3 font-medium">Date</th>
-                      <th className="px-5 py-3 font-medium">Buyer</th>
-                      <th className="px-5 py-3 font-medium">Product</th>
-                      <th className="px-5 py-3 font-medium">Amount</th>
-                      <th className="px-5 py-3 font-medium">Status</th>
-                      <th className="px-5 py-3 text-right font-medium">Fulfilment</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filtered.map((o) => (
-                      <tr key={o.id} className="border-b border-line transition last:border-0 hover:bg-surface-subtle">
-                        <td className="whitespace-nowrap px-5 py-3 text-neutral-500">{fmtDate(o.createdAt)}</td>
-                        <td className="px-5 py-3 font-medium">{o.buyerEmail}</td>
-                        <td className="px-5 py-3 text-neutral-600">
-                          {o.product ? (
-                            <span className="inline-flex items-center gap-2">
-                              <span>{o.product.title}</span>
-                              {o.product.kind && o.product.kind !== 'product' && <Badge tone="neutral">{o.product.kind}</Badge>}
-                            </span>
-                          ) : '—'}
-                        </td>
-                        <td className="whitespace-nowrap px-5 py-3 font-semibold">{o.amountCents ? formatPrice(o.amountCents, o.currency) : 'Free'}</td>
-                        <td className="px-5 py-3"><Badge tone={statusTone(o.status)}>{o.status}</Badge></td>
-                        <td className="px-5 py-3 text-right"><Badge tone={statusTone(o.fulfilmentStatus)}>{o.fulfilmentStatus}</Badge></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
-          )}
+            <EmptyTransactions />
+          ) : null}
         </div>
       </div>
-    </DashboardShell>
+    </>
   );
 }
 
 export default function IncomePage() {
-  return <IncomeView />;
+  return (
+    <DashboardShell title="Income" maxWidth="max-w-[1280px]" hideSubtitle hideTitle>
+      <IncomeContent />
+    </DashboardShell>
+  );
 }

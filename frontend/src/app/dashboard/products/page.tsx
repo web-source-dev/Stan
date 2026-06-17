@@ -7,7 +7,7 @@ import { ApiException } from '@/lib/api';
 import { DashboardShell } from '@/components/DashboardShell';
 import { Button, Card, Field, Textarea, Alert, Badge, EmptyState, Segmented, Skeleton } from '@/components/ui';
 import { IconPlus, IconBox, IconImage, IconDownload, IconCheck, IconX } from '@/components/icons';
-import { uploadToCloudinary, type SignKind } from '@/lib/upload';
+import { useMediaLibrary } from '@/components/media/MediaLibrary';
 import { formatPrice, type Product } from '@/lib/types';
 import { cn } from '@/lib/cn';
 
@@ -31,21 +31,24 @@ const EMPTY: FormState = {
 };
 
 function UploadTile({
-  icon, label, hint, done, onChange, accept,
+  icon, label, hint, done, onClick,
 }: {
   icon: React.ReactNode; label: string; hint: string; done?: React.ReactNode;
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; accept?: string;
+  onClick: () => void;
 }) {
   return (
-    <label className={cn(
-      'flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed px-4 py-6 text-center transition',
-      done ? 'border-success-500 bg-success-50/40' : 'border-line-strong hover:border-brand-300 hover:bg-brand-50/30',
-    )}>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex w-full cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border border-dashed px-4 py-6 text-center transition',
+        done ? 'border-success-500 bg-success-50/40' : 'border-line-strong hover:border-brand-300 hover:bg-brand-50/30',
+      )}
+    >
       <span className={done ? 'text-success-600' : 'text-neutral-400'}>{icon}</span>
       <span className="text-sm font-medium">{label}</span>
       {done ? <span className="text-xs font-medium text-success-600">{done}</span> : <span className="text-xs text-neutral-500">{hint}</span>}
-      <input type="file" accept={accept} onChange={onChange} className="hidden" />
-    </label>
+    </button>
   );
 }
 
@@ -60,38 +63,33 @@ function ProductForm({ initial, onClose, onSaved }: {
   const [busy, setBusy] = useState(false);
   const [uploadNote, setUploadNote] = useState('');
 
-  const sign = useCallback(
-    (kind: SignKind) => authedRequest<{ cloudName: string; apiKey: string; timestamp: number; signature: string; folder: string }>(
-      '/api/cloudinary/sign-upload', { method: 'POST', body: { kind } },
-    ),
-    [authedRequest],
-  );
+  const { open: openMediaLibrary } = useMediaLibrary();
 
-  async function handleCover(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const res = await uploadToCloudinary(file, 'product_cover', sign);
-      setForm((f) => ({ ...f, coverImageUrl: res.url, coverPublicId: res.publicId }));
-      setUploadNote('');
-    } catch (err) {
-      setUploadNote(err instanceof Error ? err.message : 'Upload failed');
-    }
+  function pickCover() {
+    openMediaLibrary({
+      accept: 'image',
+      kind: 'product_cover',
+      title: 'Select a cover image',
+      onSelect: (m) => {
+        setForm((f) => ({ ...f, coverImageUrl: m.url, coverPublicId: m.publicId }));
+        setUploadNote('');
+      },
+    });
   }
 
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const res = await uploadToCloudinary(file, 'product_file', sign);
-      setForm((f) => ({
-        ...f,
-        assets: [...f.assets, { publicId: res.publicId, resourceType: 'raw', filename: res.filename, bytes: res.bytes, format: res.format }],
-      }));
-      setUploadNote('');
-    } catch (err) {
-      setUploadNote(err instanceof Error ? err.message : 'Upload failed');
-    }
+  function pickFile() {
+    openMediaLibrary({
+      accept: 'file',
+      kind: 'product_file',
+      title: 'Select a file',
+      onSelect: (m) => {
+        setForm((f) => ({
+          ...f,
+          assets: [...f.assets, { publicId: m.publicId, resourceType: 'raw', filename: m.filename, bytes: m.bytes, format: m.format }],
+        }));
+        setUploadNote('');
+      },
+    });
   }
 
   async function save(e: React.FormEvent) {
@@ -160,15 +158,14 @@ function ProductForm({ initial, onClose, onSaved }: {
             icon={<IconImage size={22} />}
             label="Cover image"
             hint="PNG or JPG"
-            accept="image/*"
-            onChange={handleCover}
+            onClick={pickCover}
             done={form.coverImageUrl ? 'Cover uploaded' : undefined}
           />
           <UploadTile
             icon={<IconDownload size={22} />}
             label="Fulfilment file"
             hint="Delivered after purchase"
-            onChange={handleFile}
+            onClick={pickFile}
             done={form.assets.length > 0 ? `${form.assets.length} file(s)` : undefined}
           />
         </div>

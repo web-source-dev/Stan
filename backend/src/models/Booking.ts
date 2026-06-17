@@ -42,6 +42,23 @@ const bookingTypeSchema = new Schema(
 
     intakeQuestions: { type: [String], default: [] },
 
+    /** Storefront / checkout page (Stan coaching-call editor). */
+    shortDescription: { type: String, maxlength: 500, default: '' },
+    bottomTitle: { type: String, maxlength: 140, default: '' },
+    ctaLabel: { type: String, maxlength: 80, default: 'Book a Call' },
+    coverImageUrl: { type: String, default: '' },
+    coverPublicId: { type: String, default: '' },
+    thumbnailStyle: { type: String, enum: ['button', 'callout', 'preview'], default: 'callout' },
+    thumbnailButtonLabel: { type: String, maxlength: 80, default: '' },
+    discountPriceCents: { type: Number, default: 0, min: 0 },
+    discountEnabled: { type: Boolean, default: false },
+    maxAttendees: { type: Number, default: 1, min: 1, max: 100 },
+    calendarLabel: { type: String, default: 'Default', maxlength: 80 },
+    bufferBeforeEnabled: { type: Boolean, default: false },
+    bufferAfterEnabled: { type: Boolean, default: false },
+    confirmSubject: { type: String, default: 'Your booking is confirmed' },
+    confirmBody: { type: String, default: '' },
+
     status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft', index: true },
   },
   { timestamps: true },
@@ -85,12 +102,37 @@ const bookingSchema = new Schema(
   },
   { timestamps: true },
 );
-// Prevents two active bookings on the same slot of the same booking type.
+// One attendee can hold at most one active seat in a given slot — prevents a
+// double-submit from the same buyer. Multiple *different* attendees may share a
+// slot up to the booking type's maxAttendees (capacity enforced in the service),
+// which is why the slot itself is no longer globally unique.
 bookingSchema.index(
-  { bookingTypeId: 1, startAt: 1 },
+  { bookingTypeId: 1, startAt: 1, buyerEmail: 1 },
   { unique: true, partialFilterExpression: { status: { $in: ['confirmed', 'pending_payment'] } } },
 );
+// Fast per-slot capacity counting and availability lookups.
+bookingSchema.index({ bookingTypeId: 1, startAt: 1, status: 1 });
 
 export type Booking = InferSchemaType<typeof bookingSchema>;
 export type BookingDoc = HydratedDocument<Booking>;
 export const BookingModel = model('Booking', bookingSchema);
+
+/**
+ * A creator-wide block of unavailable time (vacation, a one-off meeting, lunch).
+ * Stored as an absolute UTC interval so it removes overlapping slots from every
+ * booking type's public availability, regardless of each type's timezone.
+ */
+const blockedTimeSchema = new Schema(
+  {
+    creatorId: { type: Types.ObjectId, ref: 'User', required: true, index: true },
+    startAt: { type: Date, required: true, index: true },
+    endAt: { type: Date, required: true },
+    allDay: { type: Boolean, default: false },
+    note: { type: String, default: '', maxlength: 200, trim: true },
+  },
+  { timestamps: true },
+);
+
+export type BlockedTime = InferSchemaType<typeof blockedTimeSchema>;
+export type BlockedTimeDoc = HydratedDocument<BlockedTime>;
+export const BlockedTimeModel = model('BlockedTime', blockedTimeSchema);

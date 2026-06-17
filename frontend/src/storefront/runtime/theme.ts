@@ -52,9 +52,9 @@ export interface ResolvedTheme {
 }
 
 const SPACING_MAP: Record<ThemeSpacing, { section: string; inner: string; content: string }> = {
-  compact: { section: 'space-y-3', inner: 'space-y-2', content: 'px-4' },
-  comfortable: { section: 'space-y-4', inner: 'space-y-3', content: 'px-5' },
-  airy: { section: 'space-y-6', inner: 'space-y-4', content: 'px-5' },
+  compact: { section: 'space-y-4', inner: 'space-y-2.5', content: 'px-5' },
+  comfortable: { section: 'space-y-5', inner: 'space-y-3.5', content: 'px-5' },
+  airy: { section: 'space-y-7', inner: 'space-y-4', content: 'px-6' },
 };
 
 export function fontStack(fontPair?: string): string {
@@ -111,7 +111,7 @@ function inferMotion(input: StoreThemeInput | null | undefined): ThemeMotion {
 /** Merge persisted theme with sensible defaults (backward compatible). */
 export function resolveTheme(input: StoreThemeInput | null | undefined): ResolvedTheme {
   const background = input?.background || '#ffffff';
-  const accent = input?.accent || '#5b54e8';
+  const accent = input?.accent || '#6355fa';
   const spacing = inferSpacing(input);
   const space = SPACING_MAP[spacing];
   const motion = inferMotion(input);

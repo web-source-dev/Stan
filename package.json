@@ -1,0 +1,9 @@
+{
+  "name": "stan-tooling",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Root dev tooling for the CreatorStore monorepo (pins the Agentation MCP server so it doesn't depend on the npx cache).",
+  "devDependencies": {
+    "agentation-mcp": "1.2.0"
+  }
+}

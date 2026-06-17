@@ -1,6 +1,7 @@
 import { connectDb, disconnectDb } from './config/db';
 import { logger } from './config/logger';
 import { startJobRunner, stopJobRunner } from './lib/jobRunner';
+import { registerBroadcastJobs } from './modules/broadcasts/broadcasts.service';
 
 /**
  * Optional standalone worker process. In the foundation phase the job runner
@@ -9,6 +10,7 @@ import { startJobRunner, stopJobRunner } from './lib/jobRunner';
  */
 async function main() {
   await connectDb();
+  registerBroadcastJobs();
   startJobRunner();
   logger.info('Worker process started');
 

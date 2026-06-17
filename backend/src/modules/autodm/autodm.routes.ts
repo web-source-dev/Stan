@@ -5,6 +5,7 @@ import { validate } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
 import { AutoDMRuleModel, type AutoDMRuleDoc } from '../../models/AutoDMRule';
 import { AppError } from '../../utils/AppError';
+import { runAutoReply } from '../integrations/instagram.service';
 
 // Mounted at /api/autodm.
 export const autodmRouter = Router();
@@ -57,6 +58,27 @@ autodmRouter.patch(
     Object.assign(rule, req.body);
     await rule.save();
     res.json({ rule: publicRule(rule) });
+  }),
+);
+
+// Run the auto-reply engine against a sample message. Lets a creator verify a
+// rule end-to-end (keyword match → reply + triggeredCount) without waiting for a
+// real comment/DM. Delivery is simulated (logged), never sent to a live account.
+const simulateSchema = z.object({
+  platform: z.enum(['instagram', 'tiktok']).default('instagram'),
+  text: z.string().min(1).max(1000),
+});
+autodmRouter.post(
+  '/simulate',
+  validate({ body: simulateSchema }),
+  asyncHandler(async (req, res) => {
+    const result = await runAutoReply({
+      creatorId: req.user!.id,
+      platform: req.body.platform,
+      text: req.body.text,
+      source: 'simulation',
+    });
+    res.json({ result });
   }),
 );
 

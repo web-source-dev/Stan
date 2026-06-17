@@ -29,9 +29,23 @@ export const updateProfileSchema = z
     displayName: z.string().trim().max(80).optional(),
     category: z.string().trim().max(60).optional(),
     bio: z.string().max(500).optional(),
+    phone: z.string().max(40).optional(),
     avatarPublicId: z.string().max(300).optional(),
     avatarUrl: z.string().url().max(1000).optional().or(z.literal('')),
     socialLinks: z.array(socialLink).max(10).optional(),
+    analytics: z.object({
+      facebookPixelId: z.string().max(100).optional(),
+      googleAnalyticsId: z.string().max(100).optional(),
+      tiktokPixelId: z.string().max(100).optional(),
+      pinterestTag: z.string().max(200).optional(),
+    }).optional(),
+    address: z.object({
+      street: z.string().max(200).optional(),
+      city: z.string().max(100).optional(),
+      state: z.string().max(100).optional(),
+      postalCode: z.string().max(20).optional(),
+      country: z.string().max(100).optional(),
+    }).optional(),
     primaryCta: z.enum(['shop', 'book', 'subscribe', 'lead', 'none']).optional(),
   })
   .strict();
@@ -60,7 +74,7 @@ export const updateStorefrontSchema = z
         background: z.string().optional(),
         accent: z.string().optional(),
         accent2: z.string().optional().or(z.literal('')),
-        backgroundStyle: z.enum(['solid', 'gradient', 'mesh']).optional(),
+        backgroundStyle: z.enum(['flat', 'solid', 'gradient', 'mesh']).optional(),
         spacing: z.enum(['compact', 'comfortable', 'airy']).optional(),
         cardChrome: z.enum(['elevated', 'flat', 'glass']).optional(),
         motion: z.enum(['none', 'subtle', 'expressive']).optional(),

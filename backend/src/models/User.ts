@@ -31,6 +31,10 @@ const userSchema = new Schema(
     // Bumping this invalidates all previously issued refresh tokens for the user.
     tokenVersion: { type: Number, default: 0 },
 
+    // The referral code (another creator's) that this account signed up under.
+    // Drives lifetime commission on this creator's subscription revenue.
+    referredByCode: { type: String, default: '', index: true },
+
     twoFactorEnabled: { type: Boolean, default: false },
 
     // Email notification preferences surfaced in Settings → Email Notifications.

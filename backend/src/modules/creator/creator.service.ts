@@ -26,11 +26,23 @@ function publicProfile(profile: CreatorProfileDoc) {
     displayName: profile.displayName,
     category: profile.category,
     bio: profile.bio,
+    phone: profile.phone,
     avatarUrl: profile.avatarUrl,
     socialLinks: profile.socialLinks,
+    analytics: profile.analytics,
+    address: profile.address,
     primaryCta: profile.primaryCta,
     published: profile.published,
   };
+}
+
+/**
+ * Public-safe profile for anonymous storefront visitors. Deliberately omits PII
+ * (phone, postal address) that the owner-facing `publicProfile` includes.
+ */
+function storefrontProfile(profile: CreatorProfileDoc) {
+  const { phone: _phone, address: _address, ...rest } = publicProfile(profile);
+  return rest;
 }
 
 export async function getOwnProfile(userId: string) {
@@ -76,17 +88,25 @@ export async function completeOnboarding(
     });
     await profile.save();
   } else {
-    profile = await CreatorProfileModel.create({
-      userId,
-      username: input.username,
-      displayName: input.displayName,
-      category: input.category ?? '',
-      bio: input.bio ?? '',
-      avatarPublicId: input.avatarPublicId ?? '',
-      avatarUrl: input.avatarUrl ?? '',
-      socialLinks: input.socialLinks ?? [],
-      primaryCta: input.primaryCta ?? 'none',
-    });
+    try {
+      profile = await CreatorProfileModel.create({
+        userId,
+        username: input.username,
+        displayName: input.displayName,
+        category: input.category ?? '',
+        bio: input.bio ?? '',
+        avatarPublicId: input.avatarPublicId ?? '',
+        avatarUrl: input.avatarUrl ?? '',
+        socialLinks: input.socialLinks ?? [],
+        primaryCta: input.primaryCta ?? 'none',
+      });
+    } catch (err) {
+      // Lost the race on the unique username index — return a clean conflict.
+      if (typeof err === 'object' && err !== null && (err as { code?: number }).code === 11000) {
+        throw AppError.conflict('That username is taken');
+      }
+      throw err;
+    }
     await StorefrontConfigModel.create({ creatorId: userId });
   }
 
@@ -114,10 +134,44 @@ export async function getStorefrontConfig(userId: string) {
   return config;
 }
 
+// Sections that may exist at most once; the four collections render their full
+// catalog so slicing fields must be dropped.
+const SINGLE_INSTANCE_BLOCKS = new Set(['product', 'course', 'booking', 'leadMagnet', 'links', 'emailCapture']);
+const COLLECTION_BLOCKS = new Set(['product', 'course', 'booking', 'leadMagnet']);
+
+/**
+ * Guard the persisted storefront against duplicated/missing items: collapse
+ * duplicate single-instance sections (e.g. a design template that produced
+ * several `product` blocks) to the first, and strip collection slicing
+ * (startIndex/maxItems) so a section never hides part of the catalog.
+ */
+function normalizeBlocks(blocks: unknown): unknown {
+  if (!Array.isArray(blocks)) return blocks;
+  const seen = new Set<string>();
+  const out: Record<string, unknown>[] = [];
+  for (const raw of blocks) {
+    if (!raw || typeof raw !== 'object') continue;
+    const b = raw as Record<string, unknown>;
+    const type = typeof b.type === 'string' ? b.type : '';
+    if (!type) continue;
+    if (SINGLE_INSTANCE_BLOCKS.has(type)) {
+      if (seen.has(type)) continue;
+      seen.add(type);
+    }
+    if (COLLECTION_BLOCKS.has(type) && b.config && typeof b.config === 'object') {
+      const { startIndex: _s, maxItems: _m, ...rest } = b.config as Record<string, unknown>;
+      out.push({ ...b, config: rest });
+    } else {
+      out.push(b);
+    }
+  }
+  return out;
+}
+
 export async function updateStorefrontConfig(userId: string, patch: Record<string, unknown>) {
   const config = await getStorefrontConfig(userId);
   if (patch.theme) Object.assign(config.theme as object, patch.theme as object);
-  if (patch.blocks) config.blocks = patch.blocks as never;
+  if (patch.blocks) config.blocks = normalizeBlocks(patch.blocks) as never;
   if (patch.seo) Object.assign(config.seo as object, patch.seo as object);
   await config.save();
   recordAudit({ action: 'creator.storefront_updated', actorId: userId, actorType: 'user', creatorId: userId });
@@ -149,7 +203,7 @@ export async function getPublicStorefront(username: string) {
   const courses = await listPublicCourses(String(profile.userId));
   const bookingTypes = await listPublicBookingTypes(String(profile.userId));
   return {
-    profile: publicProfile(profile),
+    profile: storefrontProfile(profile),
     theme: config?.theme ?? null,
     blocks: (config?.blocks ?? []).filter((b) => b.visible !== false),
     seo: config?.seo ?? null,

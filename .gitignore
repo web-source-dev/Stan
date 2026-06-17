@@ -1,0 +1,4 @@
+# Root dev-tooling dependencies (Agentation MCP server).
+# package-lock.json IS committed — it pins the exact dependency tree so the
+# MCP server install is reproducible and never relies on the npx cache.
+/node_modules/

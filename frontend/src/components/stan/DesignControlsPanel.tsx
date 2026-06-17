@@ -140,7 +140,7 @@ export function DesignControlsPanel({
   onFontChange: (v: string) => void;
 }) {
   return (
-    <div className="mt-6 rounded-2xl bg-[#f3f4f8] px-5 py-4 sm:px-6">
+    <div className="mt-20 rounded-2xl bg-[#f3f4f8] px-5 py-4 sm:px-6">
       <div className="grid items-end gap-6 sm:grid-cols-2">
         {/* Colors */}
         <div>

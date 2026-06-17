@@ -27,8 +27,8 @@ const BTN_SIZES: Record<ButtonSize, string> = {
 
 const BTN_VARIANTS: Record<ButtonVariant, string> = {
   primary:
-    'bg-brand-gradient text-white shadow-soft hover:shadow-glow hover:brightness-[1.04]',
-  solid: 'bg-brand-gradient text-white shadow-soft hover:shadow-glow hover:brightness-[1.04]',
+    'bg-brand-600 text-white shadow-soft hover:bg-brand-700',
+  solid: 'bg-brand-600 text-white shadow-soft hover:bg-brand-700',
   secondary:
     'bg-white text-ink border border-line-strong shadow-xs hover:bg-surface-muted hover:border-line-strong',
   outline:
@@ -429,16 +429,16 @@ export function Tabs<T extends string>({
             type="button"
             onClick={() => onChange(t.value)}
             className={cn(
-              'inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold transition',
-              variant === 'stan' ? 'rounded-xl' : 'rounded-full',
-              stanActive && 'border-2 border-brand-500 bg-white text-ink shadow-xs',
-              stanIdle && 'border border-transparent text-neutral-500 hover:bg-white/60 hover:text-ink',
+              'inline-flex items-center gap-2 rounded-full px-4 py-2 text-[15px] transition',
+              variant === 'stan' ? 'font-bold' : 'font-semibold',
+              stanActive && 'border border-brand-300 bg-white text-brand-600 shadow-xs',
+              stanIdle && 'border border-transparent text-[#131f60] hover:bg-white/60',
               variant === 'default' && active && 'bg-brand-50 text-brand-700 ring-1 ring-inset ring-brand-200',
               variant === 'default' && !active && 'text-neutral-500 hover:bg-surface-muted hover:text-ink',
             )}
           >
             {t.icon && (
-              <span className={cn(active ? 'text-brand-600' : 'text-neutral-400')}>{t.icon}</span>
+              <span className={cn(variant === 'stan' ? (active ? 'text-brand-600' : 'text-[#131f60]') : active ? 'text-brand-600' : 'text-neutral-400')}>{t.icon}</span>
             )}
             {t.label}
           </button>

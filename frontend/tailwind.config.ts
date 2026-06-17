@@ -20,15 +20,15 @@ export default {
         // Single strong brand accent — indigo/violet (Linear-esque, trustworthy).
         brand: {
           50: '#eef0ff',
-          100: '#e0e3ff',
-          200: '#c7d2fe',
-          300: '#a5b4fc',
-          400: '#818cf8',
-          500: '#5865f2',
-          600: '#4f46e5',
-          700: '#4338ca',
-          800: '#3730a3',
-          900: '#312e81',
+          100: '#e4e3ff',
+          200: '#cdcafe',
+          300: '#b3acfc',
+          400: '#8b80fc',
+          500: '#7065fb',
+          600: '#6355fa',
+          700: '#5648e8',
+          800: '#4438c4',
+          900: '#352c93',
         },
         // Semantic accents used across badges / alerts.
         success: {
@@ -84,9 +84,9 @@ export default {
         focus: '0 0 0 4px rgb(91 84 232 / 0.16)',
       },
       backgroundImage: {
-        'brand-gradient': 'linear-gradient(120deg, #4f46e5 0%, #5865f2 45%, #818cf8 100%)',
+        'brand-gradient': 'linear-gradient(120deg, #5648e8 0%, #6355fa 45%, #8b80fc 100%)',
         'brand-radial':
-          'radial-gradient(900px circle at 50% -10%, rgba(91,84,232,0.16), transparent 60%)',
+          'radial-gradient(900px circle at 50% -10%, rgba(99,85,250,0.16), transparent 60%)',
         // Soft multi-stop aurora used behind the hero / CTA surfaces.
         'aurora':
           'radial-gradient(40% 60% at 20% 20%, rgba(124,125,251,0.20), transparent 60%), radial-gradient(40% 60% at 80% 10%, rgba(91,84,232,0.18), transparent 55%), radial-gradient(50% 70% at 60% 90%, rgba(163,168,255,0.16), transparent 60%)',

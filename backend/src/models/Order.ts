@@ -17,7 +17,9 @@ const orderSchema = new Schema(
     currency: { type: String, default: 'usd', lowercase: true },
     applicationFeeCents: { type: Number, default: 0 },
 
-    stripeCheckoutSessionId: { type: String, required: true, unique: true },
+    // Optional + sparse-unique: paid orders carry a Stripe session (idempotency);
+    // free claims have none and rely on their own dedupe in fulfilFreeProduct.
+    stripeCheckoutSessionId: { type: String, unique: true, sparse: true },
     stripePaymentIntentId: { type: String },
     stripeAccountId: { type: String },
 
@@ -36,6 +38,8 @@ const orderSchema = new Schema(
     // Attribution captured at checkout-session creation.
     source: { type: String, default: '' },
     campaign: { type: Schema.Types.Mixed, default: {} },
+    // Discount code applied at checkout (surfaced in the Income filters).
+    discountCode: { type: String, default: '' },
 
     paidAt: { type: Date },
     refundedAt: { type: Date },

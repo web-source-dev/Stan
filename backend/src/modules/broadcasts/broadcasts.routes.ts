@@ -13,13 +13,17 @@ export const broadcastsRouter = Router();
 const segment = z.enum(['all_leads', 'customers', 'subscribers']);
 
 // Public unsubscribe (no auth — link from emails).
-const unsubSchema = z.object({ creatorId: z.string().regex(/^[a-f0-9]{24}$/), email: z.string().email() });
+const unsubSchema = z.object({
+  creatorId: z.string().regex(/^[a-f0-9]{24}$/),
+  email: z.string().email(),
+  token: z.string().min(1).max(64),
+});
 broadcastsRouter.post(
   '/unsubscribe',
   publicWriteLimiter,
   validate({ body: unsubSchema }),
   asyncHandler(async (req, res) => {
-    await service.unsubscribe(req.body.creatorId, req.body.email);
+    await service.unsubscribe(req.body.creatorId, req.body.email, req.body.token);
     res.json({ ok: true });
   }),
 );

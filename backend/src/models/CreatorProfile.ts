@@ -28,12 +28,30 @@ const creatorProfileSchema = new Schema(
     displayName: { type: String, trim: true, default: '' },
     category: { type: String, trim: true, default: '' },
     bio: { type: String, maxlength: 500, default: '' },
+    phone: { type: String, trim: true, default: '', maxlength: 40 },
 
     // Cloudinary public IDs / URLs for profile imagery.
     avatarPublicId: { type: String, default: '' },
     avatarUrl: { type: String, default: '' },
 
     socialLinks: { type: [socialLinkSchema], default: [] },
+
+    // Marketing pixels injected into the public storefront <head>.
+    analytics: {
+      facebookPixelId: { type: String, default: '', maxlength: 100 },
+      googleAnalyticsId: { type: String, default: '', maxlength: 100 },
+      tiktokPixelId: { type: String, default: '', maxlength: 100 },
+      pinterestTag: { type: String, default: '', maxlength: 200 },
+    },
+
+    // Optional business address (used on invoices / tax where applicable).
+    address: {
+      street: { type: String, default: '', maxlength: 200 },
+      city: { type: String, default: '', maxlength: 100 },
+      state: { type: String, default: '', maxlength: 100 },
+      postalCode: { type: String, default: '', maxlength: 20 },
+      country: { type: String, default: '', maxlength: 100 },
+    },
 
     primaryCta: {
       type: String,

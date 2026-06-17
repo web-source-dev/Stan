@@ -14,6 +14,8 @@ import {
   resolveTheme,
   type StoreThemeInput,
 } from '../runtime/theme';
+import { applyItemOrder } from '../runtime/item-order';
+import { SocialIcon } from './SocialIcon';
 
 /**
  * Shared, presentational storefront renderer. No client hooks — works in the
@@ -62,7 +64,7 @@ interface CanvasProps {
   mode?: 'live' | 'preview';
   buySlot?: (item: SFItem, accent: string, label: string) => ReactNode;
   emailSlot?: (cfg: EmailSlotConfig) => ReactNode;
-  hrefFor?: (kind: 'course' | 'booking', slug: string) => string;
+  hrefFor?: (kind: 'product' | 'course' | 'booking', slug: string) => string;
   selectedId?: string;
   onSelectBlock?: (id: string) => void;
   footerSlot?: ReactNode;
@@ -72,10 +74,6 @@ interface CanvasProps {
 const SOCIAL_LABEL: Record<string, string> = {
   instagram: 'Instagram', tiktok: 'TikTok', youtube: 'YouTube', x: 'X',
   website: 'Website', whatsapp: 'WhatsApp', linkedin: 'LinkedIn', other: 'Link',
-};
-
-const SOCIAL_GLYPH: Record<string, string> = {
-  instagram: 'IG', tiktok: 'TT', youtube: 'YT', x: 'X', linkedin: 'in', website: '↗', whatsapp: 'WA', other: '•',
 };
 
 function resolveFeaturedItem(cfg: Record<string, any>, digital: SFItem[], courses: SFItem[]): SFItem | undefined {
@@ -129,13 +127,13 @@ function ProductIcon({ accent }: { accent: string }) {
 }
 
 function Thumbnail({ url, accent, size = 'md' }: { url?: string; accent: string; size?: 'sm' | 'md' }) {
-  const dim = size === 'sm' ? 'h-11 w-11' : 'h-[72px] w-[72px]';
+  const dim = size === 'sm' ? 'h-12 w-12' : 'h-[78px] w-[78px]';
   if (url) {
     // eslint-disable-next-line @next/next/no-img-element
-    return <img src={url} alt="" className={`${dim} shrink-0 rounded-xl object-cover ring-1 ring-black/5`} />;
+    return <img src={url} alt="" className={`${dim} shrink-0 rounded-2xl object-cover ring-1 ring-black/5`} />;
   }
   return (
-    <div className={`grid ${dim} shrink-0 place-items-center rounded-xl`} style={{ background: `linear-gradient(135deg, ${accent}22, ${accent}44)` }}>
+    <div className={`grid ${dim} shrink-0 place-items-center rounded-2xl`} style={{ background: `linear-gradient(135deg, ${accent}22, ${accent}44)` }}>
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="1.5" aria-hidden>
         <rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9.5" r="1.5" /><path d="m4 17 5-5 4 4 3-3 4 4" />
       </svg>
@@ -187,6 +185,12 @@ export function StoreCanvas(props: CanvasProps) {
   const digital = products.filter((p) => p.type !== 'lead_magnet');
   const leadMagnets = products.filter((p) => p.type === 'lead_magnet');
 
+  // The live desktop page arranges all offer cards into a 2-column masonry at the
+  // page level (see the live return below), so individual collection sections
+  // render as a simple single-column stack — their cards then flow naturally into
+  // the masonry columns. (No per-section grid; that produced lonely half-rows.)
+  const liveGrid = '';
+
   const surface = (cfg: Record<string, any>) => cardSurface(t.cardChrome, dark, cfg.cardBg || undefined);
   const sectionAccent = (cfg: Record<string, any>) => cfg.accent || t.accent;
   const btnStyle = (cfg: Record<string, any>, accent: string) => {
@@ -194,9 +198,15 @@ export function StoreCanvas(props: CanvasProps) {
     return btnStyleCss(style, accent);
   };
 
-  function offerButton(item: SFItem, cfg: Record<string, any>, accentOverride?: string) {
+  function offerButton(
+    item: SFItem,
+    cfg: Record<string, any>,
+    accentOverride?: string,
+    kind: 'product' | 'course' | 'booking' = 'product',
+    insideCardLink = false,
+  ) {
     const a = accentOverride ?? sectionAccent(cfg);
-    const label = cfg.buttonLabel || item.ctaLabel || 'Buy now';
+    const label = cfg.buttonLabel || item.ctaLabel || (kind === 'booking' ? 'Book now' : kind === 'course' ? 'View course' : 'Buy now');
     const showArrow = cfg.showArrow !== false;
     const inner = (
       <>
@@ -204,12 +214,28 @@ export function StoreCanvas(props: CanvasProps) {
         {showArrow && <span className="ml-1.5 inline-block translate-y-px" aria-hidden>→</span>}
       </>
     );
-    if (mode === 'live' && props.buySlot && item.type !== 'lead_magnet') return props.buySlot(item, a, label);
+    const btnClass = `mt-3.5 flex w-full min-h-[50px] items-center justify-center rounded-full px-4 py-3.5 text-[15px] font-bold ${t.btnHoverClass} ${t.tapClass}`;
+    // When the surrounding card is already a link (collection cards link to the
+    // item's detail page), render a visual-only button to avoid nested anchors —
+    // which is invalid HTML and was sending course/booking cards to the product
+    // route (404). The parent <a> handles navigation.
+    if (insideCardLink) {
+      return <div className={btnClass} style={btnStyle(cfg, a)}>{inner}</div>;
+    }
+    if (mode === 'live') {
+      // Standalone buttons (e.g. the featured block) link to the right route per
+      // item kind — products go through checkout, courses/bookings to their page.
+      if (kind !== 'product' && props.hrefFor) {
+        return (
+          <a href={props.hrefFor(kind, item.slug)} className={btnClass} style={btnStyle(cfg, a)}>
+            {inner}
+          </a>
+        );
+      }
+      if (props.buySlot) return props.buySlot(item, a, label);
+    }
     return (
-      <div
-        className={`mt-3 flex w-full min-h-[46px] items-center justify-center rounded-full px-4 py-3 text-sm font-bold ${t.btnHoverClass} ${t.tapClass}`}
-        style={btnStyle(cfg, a)}
-      >
+      <div className={btnClass} style={btnStyle(cfg, a)}>
         {inner}
       </div>
     );
@@ -223,7 +249,17 @@ export function StoreCanvas(props: CanvasProps) {
         {node}
       </div>
     );
-    if (!props.onSelectBlock) return <div key={b.id}>{wrapped}</div>;
+    if (!props.onSelectBlock) {
+      if (b.visible === false) {
+        return (
+          <div key={b.id} className="relative">
+            <div className="absolute right-1 top-1 z-10 rounded-full bg-neutral-800/80 px-2 py-0.5 text-2xs font-medium text-white">Hidden</div>
+            <div className="opacity-40">{wrapped}</div>
+          </div>
+        );
+      }
+      return <div key={b.id}>{wrapped}</div>;
+    }
     const selected = props.selectedId === b.id;
     return (
       <div
@@ -242,9 +278,10 @@ export function StoreCanvas(props: CanvasProps) {
   function collection(b: Block, items: SFItem[], kind: 'product' | 'course' | 'booking') {
     if (items.length === 0) return null;
     const cfg = b.config;
+    const sorted = applyItemOrder(items, cfg.itemOrder);
     const start = Number(cfg.startIndex ?? 0);
     const max = cfg.maxItems != null ? Number(cfg.maxItems) : undefined;
-    const visible = items.slice(start, max != null ? start + max : undefined);
+    const visible = sorted.slice(start, max != null ? start + max : undefined);
     if (visible.length === 0) return null;
     const layout = cfg.layout || 'card';
     const grid = layout === 'grid';
@@ -261,17 +298,17 @@ export function StoreCanvas(props: CanvasProps) {
     if (horizontalCompact) {
       return (
         <section className={t.innerGap}>
-          {cfg.title && <SectionLabel title={cfg.title} dark={dark} />}
-          <div className={t.innerGap}>
+          {cfg.title && mode !== 'live' && <SectionLabel title={cfg.title} dark={dark} />}
+          <div className={`${t.innerGap}${liveGrid}`}>
             {visible.map((item) => {
               const inner = (
                 <div
-                  className={`flex items-center gap-3 p-4 ${radius} ${shadow || 'shadow-soft'} ${s.className} ${t.cardHoverClass} ${t.tapClass}`}
+                  className={`flex items-center gap-3.5 p-5 ${radius} ${shadow || 'shadow-soft'} ${s.className} ${t.cardHoverClass} ${t.tapClass}`}
                   style={{ backgroundColor: s.backgroundColor, borderColor: s.borderColor, borderWidth: 1, borderStyle: 'solid' }}
                 >
                   {cfg.showImage && <Thumbnail url={item.coverImageUrl} accent={a} size="sm" />}
                   <div className="min-w-0 flex-1 text-left">
-                    <h3 className="font-bold leading-snug" style={{ color: cardInk.ink }}>{item.title}</h3>
+                    <h3 className="text-[17px] font-bold leading-snug" style={{ color: cardInk.ink }}>{item.title}</h3>
                     {(cfg.showPrice || cfg.showRating) && (
                       <div className="mt-1 flex flex-wrap items-center gap-2">
                         {cfg.showPrice && (
@@ -286,6 +323,9 @@ export function StoreCanvas(props: CanvasProps) {
                   <span className="shrink-0 text-lg font-light" style={{ color: cardInk.ink === '#ffffff' ? '#ffffff' : a }} aria-hidden>›</span>
                 </div>
               );
+              if (mode === 'live' && props.hrefFor) {
+                return <a key={item.id} href={props.hrefFor(kind, item.slug)} className="block">{inner}</a>;
+              }
               return <div key={item.id}>{inner}</div>;
             })}
           </div>
@@ -296,18 +336,18 @@ export function StoreCanvas(props: CanvasProps) {
     if (horizontal) {
       return (
         <section className={t.innerGap}>
-          {cfg.title && <SectionLabel title={cfg.title} dark={dark} />}
-          <div className={t.innerGap}>
+          {cfg.title && mode !== 'live' && <SectionLabel title={cfg.title} dark={dark} />}
+          <div className={`${t.innerGap}${liveGrid}`}>
             {visible.map((item) => {
               const inner = (
                 <div
-                  className={`overflow-hidden p-4 ${radius} ${shadow || 'shadow-soft'} ${s.className} ${t.cardHoverClass} ${t.tapClass}`}
+                  className={`overflow-hidden p-5 ${radius} ${shadow || 'shadow-soft'} ${s.className} ${t.cardHoverClass} ${t.tapClass}`}
                   style={{ backgroundColor: s.backgroundColor, borderColor: s.borderColor, borderWidth: 1, borderStyle: 'solid' }}
                 >
                   <div className="flex gap-3">
                     {cfg.showImage && <Thumbnail url={item.coverImageUrl} accent={a} />}
                     <div className="min-w-0 flex-1 text-left">
-                      <h3 className="font-bold leading-snug" style={{ color: cardInk.ink }}>{item.title}</h3>
+                      <h3 className="text-[17px] font-bold leading-snug" style={{ color: cardInk.ink }}>{item.title}</h3>
                       {cfg.showDescription && item.shortDescription && (
                         <p className="mt-1 line-clamp-2 text-sm leading-snug" style={{ color: cardInk.sub }}>{item.shortDescription}</p>
                       )}
@@ -323,7 +363,7 @@ export function StoreCanvas(props: CanvasProps) {
                       )}
                     </div>
                   </div>
-                  {kind === 'product' && offerButton(item, cfg, cfg.ctaStyle === 'inverse' ? undefined : a)}
+                  {offerButton(item, cfg, cfg.ctaStyle === 'inverse' ? undefined : a, kind, mode === 'live' && kind !== 'product')}
                 </div>
               );
               if (mode === 'live' && kind !== 'product' && props.hrefFor) {
@@ -339,7 +379,7 @@ export function StoreCanvas(props: CanvasProps) {
     if (list) {
       return (
         <section className={t.innerGap}>
-          {cfg.title && <SectionLabel title={cfg.title} dark={dark} />}
+          {cfg.title && mode !== 'live' && <SectionLabel title={cfg.title} dark={dark} />}
           <div className={`overflow-hidden rounded-2xl border ${t.cardHoverClass}`} style={{ borderColor: s.borderColor, backgroundColor: s.backgroundColor }}>
             {visible.map((item, i) => {
               const row = (
@@ -376,7 +416,7 @@ export function StoreCanvas(props: CanvasProps) {
                   <span className="shrink-0 text-lg font-light" style={{ color: a }} aria-hidden>›</span>
                 </div>
               );
-              if (mode === 'live' && kind !== 'product' && props.hrefFor) {
+              if (mode === 'live' && props.hrefFor) {
                 return <a key={item.id} href={props.hrefFor(kind, item.slug)} className="block">{row}</a>;
               }
               return <div key={item.id}>{row}</div>;
@@ -388,8 +428,8 @@ export function StoreCanvas(props: CanvasProps) {
 
     return (
       <section className={t.innerGap}>
-        {cfg.title && <SectionLabel title={cfg.title} dark={dark} />}
-        <div className={grid ? 'grid grid-cols-1 gap-3 min-[380px]:grid-cols-2' : t.innerGap}>
+        {cfg.title && mode !== 'live' && <SectionLabel title={cfg.title} dark={dark} />}
+        <div className={grid ? 'grid grid-cols-1 gap-3 min-[380px]:grid-cols-2' : `${t.innerGap}${liveGrid}`}>
           {visible.map((item) => {
             const inner = (
               <div
@@ -418,7 +458,7 @@ export function StoreCanvas(props: CanvasProps) {
                   {cfg.showDescription && item.shortDescription && (
                     <p className="mt-1.5 text-sm leading-relaxed" style={{ color: sub }}>{item.shortDescription}</p>
                   )}
-                  {offerButton(item, cfg)}
+                  {offerButton(item, cfg, undefined, kind, mode === 'live' && kind !== 'product')}
                 </div>
               </div>
             );
@@ -438,6 +478,7 @@ export function StoreCanvas(props: CanvasProps) {
       case 'featured': {
         const item = resolveFeaturedItem(cfg, digital, courses);
         if (!item) return null;
+        const featuredKind: 'product' | 'course' = courses.some((c) => c.id === item.id) ? 'course' : 'product';
         const a = cfg.accent || t.accent;
         const s = surface(cfg);
         return (
@@ -463,7 +504,7 @@ export function StoreCanvas(props: CanvasProps) {
               {item.shortDescription && (
                 <p className="mt-1.5 text-sm leading-relaxed" style={{ color: sub }}>{item.shortDescription}</p>
               )}
-              {offerButton(item, cfg)}
+              {offerButton(item, cfg, undefined, featuredKind)}
             </div>
           </div>
         );
@@ -485,13 +526,14 @@ export function StoreCanvas(props: CanvasProps) {
                   href={mode === 'live' ? l.url : undefined}
                   target="_blank"
                   rel="noreferrer noopener"
-                  className={`sf-link-pill rounded-full px-4 py-2 text-xs font-semibold shadow-xs ${t.tapClass}`}
+                  className={`sf-link-pill inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold shadow-xs ${t.tapClass}`}
                   style={{
                     backgroundColor: dark ? 'rgba(255,255,255,0.1)' : '#ffffff',
                     color: ink,
                     border: `1px solid ${dark ? 'rgba(255,255,255,0.14)' : '#eaeaf0'}`,
                   }}
                 >
+                  <SocialIcon platform={l.platform} size={15} />
                   {SOCIAL_LABEL[l.platform] ?? l.platform}
                 </a>
               ))}
@@ -506,15 +548,16 @@ export function StoreCanvas(props: CanvasProps) {
                 href={mode === 'live' ? l.url : undefined}
                 target="_blank"
                 rel="noreferrer noopener"
-                className={`sf-link-row flex min-h-[52px] items-center justify-between px-5 py-3.5 text-sm font-semibold ${t.tapClass} ${i > 0 ? 'border-t' : ''}`}
+                className={`sf-link-row flex min-h-[52px] items-center gap-3 px-5 py-3.5 text-sm font-semibold ${t.tapClass} ${i > 0 ? 'border-t' : ''}`}
                 style={{
                   backgroundColor: dark ? 'rgba(255,255,255,0.06)' : '#ffffff',
                   color: ink,
                   borderColor: dark ? 'rgba(255,255,255,0.12)' : '#eaeaf0',
                 }}
               >
+                <SocialIcon platform={l.platform} size={18} />
                 {SOCIAL_LABEL[l.platform] ?? l.platform}
-                <span style={{ color: t.accent }} aria-hidden>›</span>
+                <span className="ml-auto" style={{ color: t.accent }} aria-hidden>›</span>
               </a>
             ))}
           </div>
@@ -665,7 +708,7 @@ export function StoreCanvas(props: CanvasProps) {
         const s = surface(cfg);
         return (
           <section className={t.innerGap}>
-            {cfg.title && <SectionLabel title={cfg.title} dark={dark} />}
+            {cfg.title && mode !== 'live' && <SectionLabel title={cfg.title} dark={dark} />}
             <div className={t.innerGap}>
               {items.map((it, i) => (
                 <details
@@ -690,7 +733,7 @@ export function StoreCanvas(props: CanvasProps) {
         const radius = RADIUS_CLASS[cfg.cardRadius] || 'rounded-2xl';
         return (
           <section className={t.innerGap}>
-            {cfg.title && <SectionLabel title={cfg.title} dark={dark} />}
+            {cfg.title && mode !== 'live' && <SectionLabel title={cfg.title} dark={dark} />}
             <div className="grid grid-cols-2 gap-2.5">
               {images.map((im, i) => {
                 const tile = im.url
@@ -734,14 +777,14 @@ export function StoreCanvas(props: CanvasProps) {
               href={mode === 'live' ? l.url : undefined}
               target="_blank"
               rel="noreferrer noopener"
-              className={`grid h-9 w-9 place-items-center rounded-full text-[10px] font-bold ${t.tapClass}`}
+              className={`grid h-10 w-10 place-items-center rounded-xl ${t.tapClass}`}
               style={{
-                backgroundColor: layout === 'split' || layout === 'hero' || dark ? 'rgba(255,255,255,0.14)' : 'transparent',
-                color: layout === 'split' || layout === 'hero' || dark ? '#ffffff' : ink,
+                backgroundColor: layout === 'split' || layout === 'hero' || dark ? 'rgba(255,255,255,0.16)' : '#f1f1f5',
+                color: layout === 'split' || layout === 'hero' || dark ? '#ffffff' : '#6b7280',
               }}
               aria-label={SOCIAL_LABEL[l.platform] ?? l.platform}
             >
-              {SOCIAL_GLYPH[l.platform] ?? '•'}
+              <SocialIcon platform={l.platform} size={18} />
             </a>
           ))}
         </div>
@@ -756,11 +799,14 @@ export function StoreCanvas(props: CanvasProps) {
               href={mode === 'live' ? l.url : undefined}
               target="_blank"
               rel="noreferrer noopener"
-              className={`grid h-9 w-9 place-items-center rounded-lg border text-[10px] font-bold ${t.tapClass}`}
-              style={{ borderColor: dark ? 'rgba(255,255,255,0.2)' : '#d4d4d8', color: ink }}
+              className={`grid h-9 w-9 place-items-center rounded-lg border ${t.tapClass}`}
+              style={{
+                borderColor: layout === 'split' || layout === 'hero' || dark ? 'rgba(255,255,255,0.4)' : '#d4d4d8',
+                color: layout === 'split' || layout === 'hero' || dark ? '#ffffff' : ink,
+              }}
               aria-label={SOCIAL_LABEL[l.platform] ?? l.platform}
             >
-              {SOCIAL_GLYPH[l.platform] ?? '•'}
+              <SocialIcon platform={l.platform} size={17} />
             </a>
           ))}
         </div>
@@ -839,14 +885,14 @@ export function StoreCanvas(props: CanvasProps) {
             : `linear-gradient(135deg, ${bannerColor}, ${bannerColor2})`,
         }}
       />
-      <div className={`${t.contentPx} pt-4 ${hcfg.align === 'center' ? 'text-center' : ''}`}>
+      <div className={`${t.contentPx} pt-5 ${hcfg.align === 'center' ? 'text-center' : ''}`}>
         {hcfg.align === 'center' ? (
           <>
-            <h1 className={`text-2xl font-bold leading-tight ${nameClass}`} style={{ color: hcfg.nameColor || ink }}>{profile.displayName}</h1>
+            <h1 className={`text-[26px] font-bold leading-tight tracking-tight ${nameClass}`} style={{ color: hcfg.nameColor || ink }}>{profile.displayName}</h1>
             {hcfg.showBio && profile.bio && (
-              <p className="mx-auto mt-2 max-w-[300px] text-sm leading-relaxed" style={{ color: sub }}>{profile.bio}</p>
+              <p className="mx-auto mt-2.5 max-w-[320px] text-[15px] leading-relaxed" style={{ color: sub }}>{profile.bio}</p>
             )}
-            <div className="mt-4">{renderSocials(true)}</div>
+            <div className="mt-5">{renderSocials(true)}</div>
           </>
         ) : (
           <>
@@ -884,13 +930,17 @@ export function StoreCanvas(props: CanvasProps) {
     <div>
       {hcfg.banner !== 'none' && layout !== 'hero' && (
         <div
-          className="relative overflow-hidden"
-          style={{ height: hcfg.bannerHeight, background: hcfg.banner === 'gradient' ? `linear-gradient(135deg, ${bannerColor} 0%, ${bannerColor2} 55%, ${bannerColor2}cc 100%)` : bannerColor }}
+          className="pointer-events-none relative overflow-hidden"
+          style={{
+            height: hcfg.bannerHeight,
+            background: hcfg.banner === 'gradient' ? `linear-gradient(135deg, ${bannerColor} 0%, ${bannerColor2} 55%, ${bannerColor2}cc 100%)` : bannerColor,
+            // Dissolve the banner into the page background instead of a hard
+            // bottom edge — gives a soft, modern gradient-wash header.
+            WebkitMaskImage: 'linear-gradient(to bottom, #000 42%, transparent 100%)',
+            maskImage: 'linear-gradient(to bottom, #000 42%, transparent 100%)',
+          }}
         >
-          <div className="pointer-events-none absolute inset-0 opacity-30" style={{ background: 'radial-gradient(circle at 30% 20%, rgba(255,255,255,0.35), transparent 55%)' }} />
-          {hcfg.bannerHeight >= 160 && (
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-2/3" style={{ background: dark ? 'linear-gradient(to top, rgba(0,0,0,0.55), transparent)' : 'linear-gradient(to top, rgba(0,0,0,0.12), transparent)' }} />
-          )}
+          <div className="absolute inset-0 opacity-30" style={{ background: 'radial-gradient(circle at 30% 20%, rgba(255,255,255,0.4), transparent 55%)' }} />
         </div>
       )}
       <div className={`flex flex-col ${headerAlign} ${t.contentPx}`} style={{ marginTop: hcfg.banner !== 'none' && showAvatar ? -(avatarSize / 2.4) : 24 }}>
@@ -926,31 +976,135 @@ export function StoreCanvas(props: CanvasProps) {
     </footer>
   ) : null;
 
-  return (
+  const headerEl = header ? selectable(header, headerNode, 0) : headerNode;
+
+  // Sections with nothing to show (empty product/course/booking collections, a
+  // featured block with no item, links with no socials…) are hidden in BOTH the
+  // live page and the editor preview, so creators only ever see the sections
+  // they've actually filled — never an "Empty …" placeholder.
+  const offerNodes = ordered.map((b, idx) => {
+    const node = renderBlock(b);
+    if (node === null) return null;
+    if (mode === 'live' && b.visible === false) return null;
+    return selectable(b, node, idx + 1);
+  });
+
+  const footerEl =
+    props.emptyOffersSlot || props.footerSlot || defaultFooter ? (
+      <div className={`${t.contentPx} pt-2 lg:px-0`}>
+        {props.emptyOffersSlot}
+        {props.footerSlot ?? defaultFooter}
+      </div>
+    ) : null;
+
+  const shell = (children: ReactNode) => (
     <div
       style={{ background: pageBg, fontFamily: fontStack(t.fontPair), minHeight: mode === 'live' ? '100vh' : undefined }}
       className="pt-[env(safe-area-inset-top)]"
     >
-      <div className={`mx-auto max-w-md pb-[max(4rem,env(safe-area-inset-bottom))]`}>
-        {header ? selectable(header, headerNode, 0) : headerNode}
-        <div className={`mt-8 ${t.sectionGap} ${t.contentPx}`}>
-          {ordered.map((b, idx) => {
-            const node = renderBlock(b);
-            if (node === null && mode === 'live') return null;
-            return selectable(
-              b,
-              node ?? <div className="rounded-xl border border-dashed p-4 text-center text-xs text-neutral-400">Empty {BLOCK_DEFS[b.type]?.label}</div>,
-              idx + 1,
-            );
-          })}
-        </div>
-        {(props.emptyOffersSlot || props.footerSlot || defaultFooter) && (
-          <div className={`${t.contentPx} pt-2`}>
-            {props.emptyOffersSlot}
-            {props.footerSlot ?? defaultFooter}
-          </div>
-        )}
-      </div>
+      {children}
     </div>
+  );
+
+  // Preview (builder phone frame): single, stacked mobile column — WYSIWYG.
+  if (mode !== 'live') {
+    return shell(
+      <div className="mx-auto max-w-md pb-[max(4rem,env(safe-area-inset-bottom))]">
+        {headerEl}
+        <div className={`mt-8 ${t.sectionGap} ${t.contentPx}`}>{offerNodes}</div>
+        {footerEl}
+      </div>,
+    );
+  }
+
+  // A clean, banner-free profile for the desktop left column (a full-width
+  // banner looks broken squeezed into a narrow side column). Avatar, name,
+  // category, bio and socials, centered — matching the Stan reference.
+  const desktopProfile = (
+    <div className="flex flex-col items-center px-2 text-center">
+      {showAvatar &&
+        (profile.avatarUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={profile.avatarUrl}
+            alt={profile.displayName}
+            className={`${avatarRadius} object-cover ring-4 ring-white shadow-[0_12px_38px_-10px_rgba(15,15,25,0.45)]`}
+            style={{ width: 132, height: 132 }}
+          />
+        ) : (
+          <div
+            className={`grid ${avatarRadius} font-bold text-white ring-4 ring-white shadow-[0_12px_38px_-10px_rgba(15,15,25,0.45)]`}
+            style={{ width: 132, height: 132, fontSize: 53, placeItems: 'center', background: `linear-gradient(145deg, ${t.accent}, ${t.accent2})` }}
+          >
+            {(profile.displayName || profile.username).charAt(0).toUpperCase()}
+          </div>
+        ))}
+      <h1 className="mt-6 text-[1.75rem] font-bold leading-tight tracking-tight" style={{ color: hcfg.nameColor || ink }}>
+        {profile.displayName || `@${profile.username}`}
+      </h1>
+      {hcfg.showHandle && (
+        <p className="mt-1 text-sm font-medium" style={{ color: dark ? 'rgba(255,255,255,0.55)' : '#64748b' }}>@{profile.username}</p>
+      )}
+      {hcfg.showCategory && profile.category && (
+        <p className="mt-2 text-[15px] font-semibold" style={{ color: t.accent }}>{profile.category}</p>
+      )}
+      {hcfg.showBio && profile.bio && (
+        <p className="mt-3.5 max-w-[300px] text-[15px] leading-relaxed" style={{ color: sub }}>{profile.bio}</p>
+      )}
+      <div className="mt-6">{renderSocials(true)}</div>
+    </div>
+  );
+
+  // Render each visible offer block once, then place them: a single stacked
+  // column on mobile (matches the builder preview), and two explicit columns on
+  // desktop. Cards are dealt left/right in alternating order (row-major, like
+  // Stan) and each column is an independent flex stack with a fixed gap — so the
+  // spacing is always consistent and there are never empty/half rows.
+  const offerItems: { key: string; el: ReactNode }[] = [];
+  ordered.forEach((b, idx) => {
+    const node = renderBlock(b);
+    if (node === null || b.visible === false) return;
+    offerItems.push({ key: b.id, el: selectable(b, node, idx + 1) });
+  });
+  const leftCol = offerItems.filter((_, i) => i % 2 === 0);
+  const rightCol = offerItems.filter((_, i) => i % 2 === 1);
+
+  const offersArea = (
+    <>
+      {/* Mobile: one stacked column */}
+      <div className={`mt-8 ${t.contentPx} ${t.sectionGap} lg:hidden`}>
+        {offerItems.map((it) => (
+          <div key={it.key}>{it.el}</div>
+        ))}
+      </div>
+      {/* Desktop: two-column masonry, row-major (zigzag) order, even gaps */}
+      <div className="hidden lg:grid lg:grid-cols-2 lg:items-start lg:gap-6">
+        <div className="flex flex-col gap-6">
+          {leftCol.map((it) => (
+            <div key={it.key}>{it.el}</div>
+          ))}
+        </div>
+        <div className="flex flex-col gap-6">
+          {rightCol.map((it) => (
+            <div key={it.key}>{it.el}</div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+
+  // Live page: stacked on mobile (identical to the preview), and a two-column
+  // layout on desktop — profile pinned/centered on the left, offers on the right.
+  return shell(
+    <div className="mx-auto w-full max-w-md pb-[max(4rem,env(safe-area-inset-bottom))] lg:grid lg:max-w-5xl lg:grid-cols-[300px_minmax(0,1fr)] lg:items-start lg:gap-10 lg:px-8">
+      <div className="lg:sticky lg:top-0 lg:self-start lg:py-16">
+        <div className="lg:hidden">{headerEl}</div>
+        <div className="hidden lg:block">{desktopProfile}</div>
+      </div>
+      <div className="min-w-0 lg:py-14">
+        {offersArea}
+        {footerEl}
+      </div>
+    </div>,
   );
 }

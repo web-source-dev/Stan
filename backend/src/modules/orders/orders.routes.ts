@@ -40,6 +40,7 @@ ordersRouter.get(
         currency: o.currency,
         status: o.status,
         fulfilmentStatus: o.fulfilmentStatus,
+        discountCode: o.get('discountCode') ?? '',
         product: items.get(String(o.get('productId'))) ?? null,
         createdAt: o.get('createdAt'),
       })),

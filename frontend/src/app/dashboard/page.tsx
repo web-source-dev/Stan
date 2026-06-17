@@ -3,256 +3,149 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
-import { apiRequest, ApiException } from '@/lib/api';
-import { cn } from '@/lib/cn';
 import { DashboardShell } from '@/components/DashboardShell';
-import { ConnectCard } from '@/components/ConnectCard';
-import { Button, Card, Alert, Badge, Stat, SectionHeading } from '@/components/ui';
-import {
-  IconBox, IconUsers, IconExternal, IconCopy, IconCheck,
-  IconChart, IconBag, IconArrowRight, IconBolt, IconStore, IconSparkles, IconCheckCircle,
-} from '@/components/icons';
-import { formatPrice, type CreatorProfile } from '@/lib/types';
+import { IconArrowRight } from '@/components/icons';
+import { type CreatorProfile } from '@/lib/types';
 
-function VerifyBanner() {
-  const { user } = useAuth();
-  const [sent, setSent] = useState(false);
-  const [busy, setBusy] = useState(false);
-  if (!user || user.emailVerified) return null;
+/* ------------------------------------------------------------------ */
+/* Thumbnails for the action cards                                     */
+/* ------------------------------------------------------------------ */
 
-  async function resend() {
-    setBusy(true);
-    await apiRequest('/api/auth/resend-verification', { method: 'POST' }).catch(() => {});
-    setSent(true);
-    setBusy(false);
-  }
-
+function ThumbMarket() {
   return (
-    <Alert kind="warn" className="mb-6">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="flex items-center gap-2">
-          <IconBolt size={16} />
-          {sent ? 'Verification email sent — check your inbox.' : 'Verify your email to publish your storefront.'}
-        </span>
-        {!sent && (
-          <button onClick={resend} disabled={busy} className="font-semibold underline underline-offset-2">
-            {busy ? 'Sending…' : 'Resend email'}
-          </button>
-        )}
-      </div>
-    </Alert>
+    <div className="relative h-[88px] w-[104px] shrink-0 overflow-hidden rounded-xl bg-gradient-to-br from-[#243018] to-[#0b1206]">
+      <div className="absolute left-2.5 top-3 text-[10px] font-extrabold leading-tight text-white">Eat Well,<br />Spend Less</div>
+      <div className="absolute left-2.5 top-[34px] text-[6px] text-white/60">on my book</div>
+      <span className="absolute right-2 top-2 text-[11px]">❤️</span>
+      <span className="absolute bottom-2 right-2 grid h-5 w-5 place-items-center rounded-full bg-white text-[10px] text-brand-600">➤</span>
+    </div>
   );
 }
 
-function PublishCard({ profile, onChange }: { profile: CreatorProfile; onChange: (p: CreatorProfile) => void }) {
-  const { user, authedRequest } = useAuth();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [copied, setCopied] = useState(false);
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
-  const storefrontUrl = `${origin}/${profile.username}`;
-
-  async function toggle() {
-    setBusy(true);
-    setError('');
-    try {
-      const res = await authedRequest<{ profile: CreatorProfile }>(
-        profile.published ? '/api/creator/unpublish' : '/api/creator/publish',
-        { method: 'POST' },
-      );
-      onChange(res.profile);
-    } catch (err) {
-      setError(err instanceof ApiException ? err.message : 'Something went wrong');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function copy() {
-    navigator.clipboard?.writeText(storefrontUrl).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  }
-
+function ThumbProduct() {
   return (
-    <Card>
-      <div className="flex items-start justify-between">
-        <div>
-          <h2 className="text-base font-semibold">Storefront</h2>
-          <p className="mt-0.5 text-sm text-neutral-500">
-            {profile.published ? 'Your storefront is live.' : 'Your storefront is in draft mode.'}
-          </p>
-        </div>
-        <Badge tone={profile.published ? 'success' : 'neutral'} dot>
-          {profile.published ? 'Published' : 'Draft'}
-        </Badge>
+    <div className="relative h-[88px] w-[104px] shrink-0 overflow-hidden rounded-xl bg-[#cde0f2] p-2.5">
+      <div className="rounded-md bg-white px-2 py-1 shadow-sm">
+        <div className="text-[7px] font-bold leading-tight text-[#1a1c3a]">The Creator Code</div>
+        <div className="text-[6px] text-neutral-400">RTN</div>
       </div>
-
-      <div className="mt-4 flex items-center gap-1 rounded-xl border border-line bg-surface-subtle px-3 py-2 text-sm">
-        <span className="truncate text-neutral-600">/{profile.username}</span>
-        <button onClick={copy} title="Copy link" className="ml-auto rounded-md p-1.5 text-neutral-400 hover:bg-surface-muted hover:text-ink">
-          {copied ? <IconCheck size={15} className="text-success-600" /> : <IconCopy size={15} />}
-        </button>
-        <Link href={`/${profile.username}`} target="_blank" title="Open" className="rounded-md p-1.5 text-neutral-400 hover:bg-surface-muted hover:text-ink">
-          <IconExternal size={15} />
-        </Link>
-      </div>
-
-      {error && <div className="mt-3"><Alert kind="error">{error}</Alert></div>}
-      {!user?.emailVerified && !profile.published && (
-        <p className="mt-3 text-xs text-neutral-500">Verify your email to publish.</p>
-      )}
-
-      <div className="mt-4">
-        <Button variant={profile.published ? 'secondary' : 'primary'} onClick={toggle} loading={busy} fullWidth>
-          {profile.published ? 'Unpublish storefront' : 'Publish storefront'}
-        </Button>
-      </div>
-    </Card>
+      <div className="mt-1 rounded-md bg-brand-600 py-1 text-center text-[7px] font-bold text-white">Buy Now</div>
+      <div className="mt-1 rounded-md bg-white py-1 text-center text-[7px] font-semibold text-[#1a1c3a] shadow-sm">Schedule 1:1</div>
+    </div>
   );
 }
 
-function TaskCard({
-  href, icon, title, body, done, soon,
-}: {
-  href: string; icon: ReactNode; title: string; body: string; done?: boolean; soon?: boolean;
-}) {
+function ThumbStanley() {
+  return (
+    <div className="relative h-[88px] w-[104px] shrink-0">
+      <span className="absolute right-4 top-0 text-sm font-extrabold text-brand-500">$</span>
+      <span className="absolute left-3 top-7 h-3 w-3 rotate-12 rounded-[3px] bg-brand-200" />
+      <span className="absolute right-3 bottom-3 h-3.5 w-3.5 -rotate-12 rounded-[3px] bg-brand-300" />
+      <div className="absolute bottom-1 left-1/2 grid h-[62px] w-[62px] -translate-x-1/2 place-items-center rounded-[31px_31px_31px_8px] bg-brand-600">
+        <svg width="32" height="32" viewBox="0 0 44 44" fill="none" aria-hidden>
+          <ellipse cx="16.5" cy="19" rx="2.3" ry="4" fill="#fff" />
+          <ellipse cx="27.5" cy="19" rx="2.3" ry="4" fill="#fff" />
+          <path d="M14 27c1.8 3 5 3.4 8 3.4s6.2-.4 8-3.4" stroke="#fff" strokeWidth="2.6" strokeLinecap="round" fill="none" />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function HomeCard({ href, title, body, thumb }: { href?: string; title: string; body: string; thumb: ReactNode }) {
   const inner = (
-    <Card hover={!soon} className={cn('h-full', soon && 'opacity-70')}>
-      <div className="flex items-start gap-4">
-        <span className={cn(
-          'grid h-12 w-12 shrink-0 place-items-center rounded-2xl',
-          done ? 'bg-success-50 text-success-600' : 'bg-brand-50 text-brand-600',
-        )}>
-          {done ? <IconCheckCircle size={24} /> : icon}
-        </span>
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 font-semibold">
-            {title}
-            {soon
-              ? <span className="rounded-full bg-surface-muted px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide text-neutral-400">Soon</span>
-              : <IconArrowRight size={15} className="text-neutral-300" />}
-          </div>
-          <p className="mt-0.5 text-sm text-neutral-500">{body}</p>
-          {done && <span className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-success-600"><IconCheck size={13} /> Done</span>}
+    <div className="flex items-center justify-between gap-4 rounded-2xl bg-white p-5 shadow-[0_1px_3px_rgba(15,15,25,0.05)] transition hover:shadow-[0_10px_28px_-12px_rgba(15,15,25,0.2)]">
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5 text-[17px] font-bold text-[#1a1c3a]">
+          {title} <IconArrowRight size={16} className="text-[#1a1c3a]" />
         </div>
+        <p className="mt-1.5 max-w-[240px] text-sm leading-relaxed text-neutral-500">{body}</p>
       </div>
-    </Card>
+      {thumb}
+    </div>
   );
-  if (soon) return inner;
-  return <Link href={href}>{inner}</Link>;
+  return href ? <Link href={href} className="block">{inner}</Link> : <div>{inner}</div>;
 }
 
-interface Insights { views: number; checkoutStarts: number; orders: number; visitToCheckoutRate: number; checkoutToOrderRate: number; }
+/* ------------------------------------------------------------------ */
+/* Page                                                                */
+/* ------------------------------------------------------------------ */
+
+function AlertIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#b59500" strokeWidth="2" strokeLinecap="round" aria-hidden>
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="7.5" x2="12" y2="13" />
+      <circle cx="12" cy="16.5" r="0.6" fill="#b59500" stroke="none" />
+    </svg>
+  );
+}
 
 function Dashboard() {
   const { authedRequest } = useAuth();
   const [profile, setProfile] = useState<CreatorProfile | null>(null);
-  const [summary, setSummary] = useState<{ revenueCents: number; orders: number; publishedProducts: number } | null>(null);
-  const [insights, setInsights] = useState<Insights | null>(null);
-  const [leadCount, setLeadCount] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     const res = await authedRequest<{ profile: CreatorProfile | null }>('/api/creator/profile');
     if (res.profile) setProfile(res.profile);
-    authedRequest<{ revenueCents: number; orders: number; publishedProducts: number }>('/api/orders/summary').then(setSummary).catch(() => {});
-    authedRequest<Insights>('/api/events/insights/summary').then(setInsights).catch(() => {});
-    authedRequest<{ total: number }>('/api/leads/manage/stats').then((s) => setLeadCount(s.total)).catch(() => {});
   }, [authedRequest]);
-
   useEffect(() => { void load(); }, [load]);
 
-  if (!profile) return null;
-
-  const firstName = (profile.displayName || 'there').split(' ')[0];
-  const themeDone = profile.published;
-  const productDone = (summary?.publishedProducts ?? 0) > 0;
+  const firstName = (profile?.displayName || 'there').split(' ')[0];
 
   return (
     <>
-      <VerifyBanner />
+      {/* Direct-deposit reminder */}
+      <div className="rounded-2xl bg-[#fcf6bd] px-6 py-4 text-center text-[15px] font-bold text-[#1a1c3a]">
+        Heads up, customers can&apos;t purchase from you yet! Please{' '}
+        <Link href="/dashboard/settings?tab=payments" className="underline decoration-2 underline-offset-2 hover:text-brand-700">set up your Direct Deposit</Link>{' '}
+        to start selling
+      </div>
 
-      {/* Welcome hero */}
-      <div className="mb-7">
-        <h2 className="font-display text-3xl font-bold leading-tight tracking-tight text-brand-700 sm:text-[2rem]">
+      {/* Set-up alert */}
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#ece08f] bg-[#fcf6bd] px-6 py-4">
+        <div className="flex items-center gap-3">
+          <AlertIcon />
+          <span className="text-[15px] font-semibold text-[#1a1c3a]">To start selling, set up direct deposit</span>
+        </div>
+        <Link href="/dashboard/settings?tab=payments" className="text-[15px] font-bold text-[#1a1c3a] transition hover:text-brand-700">Set Up Direct Deposit</Link>
+      </div>
+
+      {/* Welcome + action cards */}
+      <div className="mt-8 max-w-[460px]">
+        <h1 className="text-[28px] font-bold leading-tight tracking-tight text-brand-600">
           Welcome, {firstName} <span className="align-middle">👋</span>
           <br />
           Let&apos;s get you ready to sell.
-        </h2>
+        </h1>
+
+        <div className="mt-6 space-y-4">
+          <HomeCard
+            href="/dashboard/storefront"
+            title="Market your products"
+            body="Make a post to highlight your offer on socials"
+            thumb={<ThumbMarket />}
+          />
+          <HomeCard
+            href="/dashboard/products/new"
+            title="Add a product"
+            body="Go from idea to product offer in minutes"
+            thumb={<ThumbProduct />}
+          />
+          <HomeCard
+            title="Ask Stanley"
+            body="Your very own AI Creator coach"
+            thumb={<ThumbStanley />}
+          />
+        </div>
       </div>
-
-      {/* Get-ready task cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <TaskCard
-          href="/dashboard/storefront"
-          icon={<IconStore size={24} />}
-          title="Choose store theme"
-          body="Customize your store design and bring your brand to life."
-          done={themeDone}
-        />
-        <TaskCard
-          href="/dashboard/products"
-          icon={<IconBox size={24} />}
-          title="Add a product"
-          body="Go from idea to product offer in minutes."
-          done={productDone}
-        />
-        <TaskCard
-          href="#"
-          icon={<IconSparkles size={24} />}
-          title="Ask Stanley"
-          body="Your very own AI Creator coach."
-          soon
-        />
-      </div>
-
-      {/* At-a-glance */}
-      <div className="mt-8 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <Stat label="Revenue · 30d" value={summary ? formatPrice(summary.revenueCents) : '—'} icon={<IconChart size={18} />} />
-        <Stat label="Orders · 30d" value={summary ? String(summary.orders) : '—'} icon={<IconBag size={18} />} />
-        <Stat label="Live products" value={summary ? String(summary.publishedProducts) : '—'} icon={<IconBox size={18} />} />
-        <Stat label="Audience" value={leadCount === null ? '—' : String(leadCount)} icon={<IconUsers size={18} />} />
-      </div>
-
-      <div className="mt-6 grid gap-5 lg:grid-cols-2">
-        <PublishCard profile={profile} onChange={setProfile} />
-        <ConnectCard />
-      </div>
-
-      {insights && insights.views > 0 && (
-        <Card className="mt-6">
-          <SectionHeading title="Conversion · 30d" subtitle="From storefront view to completed order." />
-          <div className="mt-5 grid gap-4 sm:grid-cols-3">
-            {[
-              { label: 'Storefront views', value: insights.views, rate: null as string | null },
-              { label: 'Checkouts started', value: insights.checkoutStarts, rate: `${insights.visitToCheckoutRate}%` },
-              { label: 'Orders', value: insights.orders, rate: `${insights.checkoutToOrderRate}%` },
-            ].map((step, i) => (
-              <div key={step.label} className="relative rounded-xl border border-line bg-surface-subtle p-4">
-                <div className="text-2xl font-bold tracking-tight">{step.value}</div>
-                <div className="mt-0.5 text-sm text-neutral-600">{step.label}</div>
-                {step.rate && (
-                  <div className="mt-2 inline-flex items-center gap-1 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">
-                    {step.rate} conversion
-                  </div>
-                )}
-                {i < 2 && (
-                  <IconArrowRight size={18} className="absolute -right-3 top-1/2 hidden -translate-y-1/2 text-neutral-300 sm:block" />
-                )}
-              </div>
-            ))}
-          </div>
-        </Card>
-      )}
-
     </>
   );
 }
 
 export default function DashboardPage() {
   return (
-    <DashboardShell title="Home">
+    <DashboardShell title="Home" maxWidth="max-w-[1280px]" hideTitle hideSubtitle>
       <Dashboard />
     </DashboardShell>
   );

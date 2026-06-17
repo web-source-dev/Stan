@@ -9,6 +9,7 @@ import { getPublicCourse } from '../courses/courses.service';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { LandingPageModel } from '../../models/LandingPage';
 import { ProductModel } from '../../models/Product';
+import { UserModel } from '../../models/User';
 import { AppError } from '../../utils/AppError';
 
 // Public, unauthenticated storefront read (mounted at /api/storefront).
@@ -45,8 +46,14 @@ storefrontRouter.get(
   '/:username/landing/:slug',
   validate({ params: productParams }),
   asyncHandler(async (req, res) => {
-    const profile = await CreatorProfileModel.findOne({ username: String(req.params.username) }).select('userId published displayName avatarUrl');
-    if (!profile || !profile.published) throw AppError.notFound('Page not found');
+    const profile = await CreatorProfileModel.findOne({ username: String(req.params.username) }).select('userId displayName avatarUrl');
+    if (!profile) throw AppError.notFound('Page not found');
+    // A private landing page is a standalone, unlisted page reached only via its
+    // slug — by design it works even when the main storefront is still an
+    // unpublished draft. Only the page's own `published` flag gates it (plus the
+    // account being active). We intentionally do NOT require profile.published.
+    const owner = await UserModel.findById(profile.userId).select('status');
+    if (!owner || owner.status !== 'active') throw AppError.notFound('Page not found');
     const page = await LandingPageModel.findOneAndUpdate(
       { creatorId: profile.userId, slug: String(req.params.slug), published: true },
       { $inc: { views: 1 } },

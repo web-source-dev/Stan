@@ -1,10 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-import { ApiException } from '@/lib/api';
+import { apiRequest, ApiException } from '@/lib/api';
 import { AuthShell, Button, Field, Alert } from '@/components/ui';
 
 export default function SignupPage() {
@@ -14,13 +14,22 @@ export default function SignupPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [ref, setRef] = useState<string | undefined>();
+
+  // Capture a referral code from the link and record the click.
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get('ref') ?? undefined;
+    if (!code) return;
+    setRef(code);
+    apiRequest('/api/referrals/track', { method: 'POST', body: { code } }).catch(() => {});
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     setBusy(true);
     try {
-      await signup(email, password);
+      await signup(email, password, ref);
       router.push('/onboarding');
     } catch (err) {
       setError(err instanceof ApiException ? err.message : 'Something went wrong');

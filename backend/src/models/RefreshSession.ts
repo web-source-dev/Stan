@@ -15,6 +15,9 @@ const refreshSessionSchema = new Schema(
     expiresAt: { type: Date, required: true },
     revokedAt: { type: Date },
     replacedByJti: { type: String },
+    // When this session was rotated. Used to distinguish a benign concurrent
+    // refresh (within a short grace window) from genuine token reuse/theft.
+    replacedAt: { type: Date },
     userAgent: { type: String, default: '' },
     ip: { type: String, default: '' },
   },

@@ -7,7 +7,7 @@ import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mong
  */
 const webhookEventSchema = new Schema(
   {
-    provider: { type: String, enum: ['stripe', 'resend'], required: true },
+    provider: { type: String, enum: ['stripe', 'resend', 'instagram'], required: true },
     eventId: { type: String, required: true },
     type: { type: String, required: true },
     status: {

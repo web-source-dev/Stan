@@ -23,8 +23,31 @@ export interface Product {
   assetCount: number;
   salesCount: number;
   grossCents: number;
+  productKind?: string;
+  thumbnailStyle?: string;
+  bottomTitle?: string;
+  discountPriceCents?: number;
+  deliveryMode?: string;
+  redirectUrl?: string;
+  confirmSubject?: string;
+  confirmBody?: string;
+  reviewsEnabled?: boolean;
+  reviews?: { id: string; author: string; quote: string; rating: number; avatarUrl?: string }[];
+  emailFlows?: { id: string; dayOffset: number; subject: string; body: string; enabled: boolean }[];
+  orderBumpEnabled?: boolean;
+  orderBumpTitle?: string;
+  orderBumpDescription?: string;
+  orderBumpPriceCents?: number;
+  affiliateEnabled?: boolean;
+  affiliateCommissionPercent?: number;
+  paymentPlanEnabled?: boolean;
+  paymentPlanInstallments?: number;
+  discountCodes?: { id: string; code: string; type: 'percent' | 'fixed'; value: number }[];
+  quantityLimit?: number;
+  customFields?: { id: string; label: string; type: 'text' | 'textarea' | 'phone'; required: boolean }[];
   assets?: { _id: string; publicId: string; filename: string; bytes: number; resourceType: string }[];
   thankYouMessage?: string;
+  coverPublicId?: string;
 }
 
 export interface ConnectStatus {
@@ -63,8 +86,11 @@ export interface CreatorProfile {
   displayName: string;
   category: string;
   bio: string;
+  phone?: string;
   avatarUrl: string;
   socialLinks: { platform: string; url: string }[];
+  analytics?: { facebookPixelId?: string; googleAnalyticsId?: string; tiktokPixelId?: string; pinterestTag?: string };
+  address?: { street?: string; city?: string; state?: string; postalCode?: string; country?: string };
   primaryCta: 'shop' | 'book' | 'subscribe' | 'lead' | 'none';
   published: boolean;
 }

@@ -3,13 +3,43 @@ import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { OrderModel } from '../../models/Order';
 import { EntitlementModel } from '../../models/Entitlement';
-import { ProductModel } from '../../models/Product';
+import { ProductModel, type ProductDoc } from '../../models/Product';
 import { enqueueEmail } from '../../lib/jobs';
 import { recordAudit } from '../../lib/audit';
 import { upsertCustomerLead } from '../leads/leads.service';
-import { triggerFlows } from '../flows/flows.service';
+import { triggerFlows, triggerProductEmailFlows } from '../flows/flows.service';
 import { CourseModel } from '../../models/Course';
 import { EnrollmentModel } from '../../models/Enrollment';
+
+/**
+ * Bump a product's sales counters at fulfilment. Revenue is always recorded.
+ * salesCount is incremented atomically and capped at the quantity limit, so two
+ * final sales racing past the checkout-time gate can never push the public
+ * "sold out" state into an inconsistent state — the loser is honored (the buyer
+ * paid) but the oversell is audited for the creator to reconcile.
+ */
+async function bumpProductSalesCounters(product: ProductDoc, grossCents: number): Promise<void> {
+  if (grossCents > 0) {
+    await ProductModel.updateOne({ _id: product._id }, { $inc: { grossCents } });
+  }
+  if (product.quantityLimit > 0) {
+    const res = await ProductModel.updateOne(
+      { _id: product._id, $expr: { $lt: ['$salesCount', '$quantityLimit'] } },
+      { $inc: { salesCount: 1 } },
+    );
+    if (res.modifiedCount === 0) {
+      recordAudit({
+        action: 'product.oversold',
+        actorType: 'system',
+        creatorId: String(product.creatorId),
+        targetType: 'product',
+        targetId: String(product._id),
+      });
+    }
+  } else {
+    await ProductModel.updateOne({ _id: product._id }, { $inc: { salesCount: 1 } });
+  }
+}
 
 function formatMoney(cents: number, currency: string): string {
   try {
@@ -19,6 +49,127 @@ function formatMoney(cents: number, currency: string): string {
   } catch {
     return `${(cents / 100).toFixed(2)} ${currency.toUpperCase()}`;
   }
+}
+
+function personalizeConfirmText(text: string, product: ProductDoc, fulfilmentUrl: string): string {
+  return text
+    .replace(/\[Product Name\]/g, product.title)
+    .replace(/\[My Username\]/g, '')
+    .replace(/\[Download Link\]/g, fulfilmentUrl)
+    .replace(/\[Access Link\]/g, fulfilmentUrl);
+}
+
+async function sendProductConfirmationEmail(
+  buyerEmail: string,
+  product: ProductDoc,
+  order: { amountCents: number; currency: string },
+  fulfilmentUrl: string,
+): Promise<void> {
+  const amount = formatMoney(order.amountCents, order.currency);
+  if (product.confirmSubject.trim() || product.confirmBody.trim()) {
+    const subject = personalizeConfirmText(
+      product.confirmSubject.trim() || `Your purchase: ${product.title}`,
+      product,
+      fulfilmentUrl,
+    );
+    const bodyText = personalizeConfirmText(
+      product.confirmBody.trim() ||
+        `Thanks for purchasing ${product.title}.\n\nAccess your purchase: ${fulfilmentUrl}`,
+      product,
+      fulfilmentUrl,
+    );
+    await enqueueEmail(buyerEmail, 'broadcast', {
+      subject,
+      bodyText: `${bodyText}\n\n${product.thankYouMessage ? product.thankYouMessage + '\n\n' : ''}Access link: ${fulfilmentUrl}`,
+    });
+    return;
+  }
+
+  await enqueueEmail(buyerEmail, 'purchase_receipt', {
+    productTitle: product.title,
+    amount,
+    fulfilmentUrl,
+    thankYouMessage: product.thankYouMessage || '',
+  });
+}
+
+async function grantProductEntitlement(
+  creatorId: string,
+  productId: string,
+  buyerEmail: string,
+  orderId?: string,
+) {
+  let entitlement = await EntitlementModel.findOne({ buyerEmail, productId });
+  if (!entitlement) {
+    try {
+      entitlement = await EntitlementModel.create({
+        creatorId,
+        productId,
+        orderId,
+        buyerEmail,
+        type: 'download',
+      });
+    } catch {
+      entitlement = await EntitlementModel.findOne({ buyerEmail, productId });
+    }
+  }
+  return entitlement;
+}
+
+/** Fulfil a free product (lead magnet) without a Stripe session. */
+export async function fulfilFreeProduct(input: {
+  creatorId: string;
+  product: ProductDoc;
+  buyerEmail: string;
+  buyerName?: string;
+  source?: string;
+}): Promise<{ url: string; accessToken: string }> {
+  const { creatorId, product, buyerEmail } = input;
+  const productId = product.id;
+
+  let order = await OrderModel.findOne({
+    creatorId,
+    productId,
+    buyerEmail,
+    amountCents: 0,
+    status: 'paid',
+  });
+  let isNew = false;
+  if (!order) {
+    order = await OrderModel.create({
+      creatorId,
+      productId,
+      buyerEmail,
+      amountCents: 0,
+      currency: product.currency,
+      status: 'paid',
+      fulfilmentStatus: 'pending',
+      paidAt: new Date(),
+      source: input.source ?? 'product',
+    });
+    isNew = true;
+  }
+
+  const entitlement = await grantProductEntitlement(creatorId, productId, buyerEmail, order.id);
+  if (!entitlement) throw new Error('Failed to grant access');
+
+  if (isNew) {
+    await bumpProductSalesCounters(product, 0);
+  }
+
+  const fulfilmentUrl = `${env.APP_URL}/access/${entitlement.accessToken}`;
+
+  if (order.fulfilmentStatus !== 'fulfilled') {
+    await sendProductConfirmationEmail(buyerEmail, product, order, fulfilmentUrl);
+    order.fulfilmentStatus = 'fulfilled';
+    await order.save();
+    if (isNew) {
+      await triggerFlows(creatorId, buyerEmail, 'lead').catch(() => {});
+      await triggerProductEmailFlows(product, buyerEmail).catch(() => {});
+    }
+  }
+
+  return { url: fulfilmentUrl, accessToken: entitlement.accessToken };
 }
 
 /**
@@ -93,6 +244,7 @@ export async function fulfilCheckoutSession(
         fulfilmentStatus: 'pending',
         paidAt: new Date(),
         source: session.metadata?.source ?? '',
+        discountCode: session.metadata?.discountCode ?? '',
       });
       isNew = true;
     } catch (err) {
@@ -104,43 +256,24 @@ export async function fulfilCheckoutSession(
   if (!order) return;
 
   // Grant entitlement (idempotent on buyerEmail+productId).
-  let entitlement = await EntitlementModel.findOne({ buyerEmail, productId });
-  if (!entitlement) {
-    try {
-      entitlement = await EntitlementModel.create({
-        creatorId,
-        productId,
-        orderId: order.id,
-        buyerEmail,
-        type: 'download',
-      });
-    } catch {
-      entitlement = await EntitlementModel.findOne({ buyerEmail, productId });
-    }
-  }
+  const entitlement = await grantProductEntitlement(creatorId, productId, buyerEmail, order.id);
 
   if (isNew) {
-    await ProductModel.updateOne(
-      { _id: productId },
-      { $inc: { salesCount: 1, grossCents: order.amountCents } },
-    );
+    await bumpProductSalesCounters(product, order.amountCents);
     // Add the buyer to the creator's contacts, flagged as a customer.
-    await upsertCustomerLead(creatorId, buyerEmail).catch(() => {});
+    await upsertCustomerLead(creatorId, buyerEmail, session.metadata?.buyerName).catch(() => {});
   }
 
   // Enqueue receipt + fulfilment email (durable, retried by the job runner).
   if (order.fulfilmentStatus !== 'fulfilled' && entitlement) {
     const fulfilmentUrl = `${env.APP_URL}/access/${entitlement.accessToken}`;
-    await enqueueEmail(buyerEmail, 'purchase_receipt', {
-      productTitle: product.title,
-      amount: formatMoney(order.amountCents, order.currency),
-      fulfilmentUrl,
-      thankYouMessage: product.thankYouMessage || '',
-    });
+    await sendProductConfirmationEmail(buyerEmail, product, order, fulfilmentUrl);
     order.fulfilmentStatus = 'fulfilled';
     await order.save();
-    // Kick off any post-purchase email flows (idempotent: only on first fulfil).
-    if (isNew) await triggerFlows(creatorId, buyerEmail, 'purchase').catch(() => {});
+    if (isNew) {
+      await triggerFlows(creatorId, buyerEmail, 'purchase').catch(() => {});
+      await triggerProductEmailFlows(product, buyerEmail).catch(() => {});
+    }
   }
 
   recordAudit({
@@ -188,6 +321,7 @@ async function fulfilCourseSession(
         fulfilmentStatus: 'pending',
         paidAt: new Date(),
         source: session.metadata?.source ?? '',
+        discountCode: session.metadata?.discountCode ?? '',
       });
       isNew = true;
     } catch {
@@ -200,7 +334,7 @@ async function fulfilCourseSession(
 
   if (isNew) {
     await CourseModel.updateOne({ _id: courseId }, { $inc: { enrollmentCount: 1, grossCents: order.amountCents } });
-    await upsertCustomerLead(creatorId, buyerEmail).catch(() => {});
+    await upsertCustomerLead(creatorId, buyerEmail, session.metadata?.buyerName).catch(() => {});
   }
 
   if (order.fulfilmentStatus !== 'fulfilled') {
@@ -238,6 +372,12 @@ export async function markRefunded(paymentIntentId: string): Promise<void> {
   order.refundedAt = new Date();
   await order.save();
   await EntitlementModel.updateMany(
+    { orderId: order.id, revokedAt: { $exists: false } },
+    { $set: { revokedAt: new Date() } },
+  );
+  // Course purchases grant an Enrollment (not an Entitlement) — revoke those too
+  // so a refunded buyer loses course access.
+  await EnrollmentModel.updateMany(
     { orderId: order.id, revokedAt: { $exists: false } },
     { $set: { revokedAt: new Date() } },
   );

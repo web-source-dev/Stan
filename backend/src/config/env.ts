@@ -34,6 +34,25 @@ const envSchema = z.object({
 
   STRIPE_SECRET_KEY: z.string().optional().default(''),
   STRIPE_WEBHOOK_SECRET: z.string().optional().default(''),
+
+  // Stanley AI assistant (Anthropic). Optional — without a key the assistant
+  // falls back to a deterministic, data-aware responder.
+  ANTHROPIC_API_KEY: z.string().optional().default(''),
+  ASSISTANT_MODEL: z.string().default('claude-sonnet-4-6'),
+
+  // Meta / Instagram AutoDM (OPTIONAL — without App ID/Secret the AutoDM engine
+  // runs in simulation mode: rules still match and replies are logged, but no
+  // live OAuth/webhook/Graph delivery happens).
+  META_APP_ID: z.string().optional().default(''),
+  META_APP_SECRET: z.string().optional().default(''),
+  META_GRAPH_VERSION: z.string().default('v21.0'),
+  // Where Facebook redirects back after the OAuth consent dialog.
+  META_OAUTH_REDIRECT_URI: z
+    .string()
+    .optional()
+    .default('http://localhost:4000/api/integrations/instagram/callback'),
+  // Shared secret echoed back during the webhook subscription handshake.
+  META_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(''),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -60,6 +79,11 @@ export const env = {
   ),
   emailConfigured: Boolean(raw.RESEND_API_KEY),
   stripeConfigured: Boolean(raw.STRIPE_SECRET_KEY),
+  aiConfigured: Boolean(raw.ANTHROPIC_API_KEY),
+  // Instagram is "configured" once we have Meta app credentials. Without them
+  // the AutoDM engine still runs (keyword match + simulated reply), so the
+  // feature is demonstrable locally and goes live the moment keys are added.
+  instagramConfigured: Boolean(raw.META_APP_ID && raw.META_APP_SECRET),
   // Dev-only fallback: when Stripe isn't configured (and we're not in
   // production), checkout simulates a completed purchase so the full
   // purchase → fulfilment → access flow is demonstrable without API keys.

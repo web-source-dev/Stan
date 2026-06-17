@@ -16,7 +16,8 @@ export type EmailTemplate =
   | 'password_changed'
   | 'purchase_receipt'
   | 'broadcast'
-  | 'booking_confirmation';
+  | 'booking_confirmation'
+  | 'customer_login_code';
 
 interface TemplateData {
   email_verification: { verifyUrl: string };
@@ -40,6 +41,10 @@ interface TemplateData {
     whenText: string;
     meetingUrl?: string;
     manageUrl: string;
+  };
+  customer_login_code: {
+    code: string;
+    creatorName: string;
   };
 }
 
@@ -123,6 +128,19 @@ export function renderEmail<T extends EmailTemplate>(
         text: `Booking confirmed: ${title}\n${whenText}` +
           (meetingUrl ? `\nMeeting: ${meetingUrl}` : '') +
           `\nManage: ${manageUrl}`,
+      };
+    }
+    case 'customer_login_code': {
+      const { code, creatorName } = data as TemplateData['customer_login_code'];
+      return {
+        subject: `Your ${creatorName} access code: ${code}`,
+        html: layout(
+          'Your login code',
+          `<p>Use this code to access your purchases from <strong>${creatorName}</strong>:</p>` +
+            `<p style="font-size:30px;font-weight:700;letter-spacing:6px;margin:16px 0">${code}</p>` +
+            `<p style="color:#888;font-size:12px">This code expires in 10 minutes. If you didn't request it, you can ignore this email.</p>`,
+        ),
+        text: `Your ${creatorName} access code is ${code}. It expires in 10 minutes.`,
       };
     }
     case 'password_changed': {

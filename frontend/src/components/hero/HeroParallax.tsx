@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useReducedMotion } from '@/lib/use-reduced-motion';
+import { SocialIcon } from '@/storefront/renderer/SocialIcon';
 import {
   IconCalendar,
   IconBook,
@@ -75,9 +76,9 @@ export function HeroParallax() {
                 <div className="mt-2 text-sm font-bold">Maya Rivera</div>
                 <div className="text-[11px] text-white/80">Fitness coach</div>
                 <div className="mt-2 flex justify-center gap-1.5 text-white/85">
-                  {['IG', 'YT', 'X', 'TT'].map((s) => (
-                    <span key={s} className="grid h-5 w-5 place-items-center rounded-full bg-white/15 text-[8px] font-semibold">
-                      {s}
+                  {['instagram', 'youtube', 'x', 'tiktok'].map((s) => (
+                    <span key={s} className="grid h-5 w-5 place-items-center rounded-full bg-white/15">
+                      <SocialIcon platform={s} size={11} />
                     </span>
                   ))}
                 </div>

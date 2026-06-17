@@ -42,4 +42,21 @@ export function signedDeliveryUrl(publicId: string, resourceType = 'raw', expire
   });
 }
 
+/**
+ * Permanently delete an asset from Cloudinary. No-op when Cloudinary isn't
+ * configured (dev). Never throws — deletion of the library row should proceed
+ * even if the remote delete fails (e.g. asset already gone).
+ */
+export async function destroyAsset(
+  publicId: string,
+  resourceType: 'image' | 'video' | 'raw' = 'image',
+): Promise<void> {
+  if (!env.cloudinaryConfigured || !publicId) return;
+  try {
+    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType, invalidate: true });
+  } catch {
+    /* best-effort */
+  }
+}
+
 export { cloudinary };

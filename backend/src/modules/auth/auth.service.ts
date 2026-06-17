@@ -1,6 +1,7 @@
 import { env } from '../../config/env';
 import { AppError } from '../../utils/AppError';
 import { UserModel, type UserDoc } from '../../models/User';
+import { ReferralModel } from '../../models/Referral';
 import { RefreshSessionModel } from '../../models/RefreshSession';
 import { AuthTokenModel } from '../../models/AuthToken';
 import { hashPassword, verifyPassword } from '../../lib/password';
@@ -21,6 +22,11 @@ export interface SessionTokens {
 
 const VERIFY_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const RESET_TTL_MS = 60 * 60 * 1000; // 1h
+// A refresh token presented again within this window of being rotated is treated
+// as a benign concurrent refresh / client retry (rejected softly), not as token
+// theft. Reuse *after* this window still trips reuse-detection and kills the
+// whole session family.
+const REFRESH_REUSE_GRACE_MS = 30 * 1000; // 30s
 
 function publicUser(user: UserDoc) {
   return {
@@ -64,13 +70,29 @@ async function createAndSendVerification(user: UserDoc): Promise<void> {
   await enqueueEmail(user.email, 'email_verification', { verifyUrl });
 }
 
-export async function signup(email: string, password: string, ctx: RequestContext) {
+export async function signup(email: string, password: string, ctx: RequestContext, ref?: string) {
   const existing = await UserModel.findOne({ email });
   if (existing) throw AppError.conflict('An account with that email already exists');
 
   const user = await UserModel.create({ email, passwordHash: await hashPassword(password) });
   await createAndSendVerification(user);
   recordAudit({ action: 'auth.signup', actorId: user.id, actorType: 'user', ...ctx });
+
+  // Attribute the signup to a referrer (best-effort — never blocks signup).
+  // Only persist the referrer link when the code resolves to a real referral
+  // record, so later subscription revenue can accrue commission to that creator.
+  if (ref) {
+    try {
+      const referrer = await ReferralModel.findOneAndUpdate(
+        { code: ref.toLowerCase() },
+        { $inc: { signups: 1 }, $addToSet: { referredEmails: email.toLowerCase() } },
+      );
+      if (referrer) {
+        user.referredByCode = referrer.code;
+        await user.save();
+      }
+    } catch { /* ignore */ }
+  }
 
   const tokens = await issueSession(user, ctx);
   return { user: publicUser(user), tokens };
@@ -116,27 +138,44 @@ export async function refresh(rawToken: string | undefined, ctx: RequestContext)
   const session = await RefreshSessionModel.findOne({ jti: payload.jti });
   if (!session) throw AppError.unauthorized('Session not found');
 
-  if (session.revokedAt || session.replacedByJti) {
-    // Token reuse detected — invalidate every session for this user.
-    await UserModel.updateOne({ _id: payload.sub }, { $inc: { tokenVersion: 1 } });
-    recordAudit({
-      action: 'auth.refresh_reuse_detected',
-      actorId: payload.sub,
-      actorType: 'user',
-      ...ctx,
-    });
-    throw AppError.unauthorized('Refresh token already used');
+  // Explicitly revoked (logout / password reset / family invalidation). Reject
+  // this request, but don't escalate to a family-wide kill — revocation is
+  // already scoped, and escalating here would punish benign logout races.
+  if (session.revokedAt) throw AppError.unauthorized('Session revoked');
+
+  if (session.replacedByJti) {
+    // The token was already rotated. Within the grace window this is a benign
+    // concurrent refresh or client retry — reject this one request softly so the
+    // client falls back to the token it already received. Outside the window it
+    // looks like reuse of a long-dead token (likely theft): kill the family.
+    const replacedAgoMs = Date.now() - (session.replacedAt?.getTime() ?? 0);
+    if (replacedAgoMs > REFRESH_REUSE_GRACE_MS) {
+      await UserModel.updateOne({ _id: payload.sub }, { $inc: { tokenVersion: 1 } });
+      recordAudit({ action: 'auth.refresh_reuse_detected', actorId: payload.sub, actorType: 'user', ...ctx });
+      throw AppError.unauthorized('Refresh token already used');
+    }
+    throw AppError.unauthorized('Refresh token already rotated');
   }
 
   const user = await UserModel.findById(payload.sub).select('+tokenVersion');
   if (!user || user.status !== 'active') throw AppError.unauthorized('Account is not active');
   if (user.tokenVersion !== payload.tokenVersion) throw AppError.unauthorized('Session invalidated');
 
-  // Rotate: mark the current session replaced and issue a fresh one.
+  // Rotate. Issue the new session first, then *atomically* claim the rotation of
+  // the presented token: only the first concurrent caller flips replacedByJti
+  // from unset. If we lose that race the new session we just created is an
+  // orphan, so delete it and reject softly (no family kill) — this is what makes
+  // concurrent refreshes safe instead of triggering a global logout.
   const newTokens = await issueSession(user, ctx);
   const newPayload = verifyRefreshToken(newTokens.refreshToken);
-  session.replacedByJti = newPayload.jti;
-  await session.save();
+  const claimed = await RefreshSessionModel.findOneAndUpdate(
+    { jti: payload.jti, revokedAt: { $exists: false }, replacedByJti: { $exists: false } },
+    { $set: { replacedByJti: newPayload.jti, replacedAt: new Date() } },
+  );
+  if (!claimed) {
+    await RefreshSessionModel.deleteOne({ jti: newPayload.jti });
+    throw AppError.unauthorized('Refresh token already rotated');
+  }
 
   return { user: publicUser(user), tokens: newTokens };
 }
@@ -228,4 +267,14 @@ export async function getMe(userId: string) {
   const user = await UserModel.findById(userId);
   if (!user) throw AppError.unauthorized('Account no longer exists');
   return { user: publicUser(user) };
+}
+
+export async function changePassword(userId: string, current: string, next: string): Promise<void> {
+  const user = await UserModel.findById(userId).select('+passwordHash');
+  if (!user) throw AppError.unauthorized('Account no longer exists');
+  const ok = await verifyPassword(current, user.passwordHash);
+  if (!ok) throw AppError.badRequest('Current password is incorrect');
+  user.passwordHash = await hashPassword(next);
+  await user.save();
+  recordAudit({ action: 'auth.password_changed', actorId: user.id, actorType: 'user' });
 }

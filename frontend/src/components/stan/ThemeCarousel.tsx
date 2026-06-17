@@ -33,7 +33,7 @@ function circularOffset(index: number, active: number, length: number): number {
 function carouselStyle(offset: number): React.CSSProperties {
   const abs = Math.abs(offset);
   const scale = offset === 0 ? 1 : abs === 1 ? 0.84 : 0.7;
-  const x = offset * 132;
+  const x = offset * 158;
   const rotateY = offset * -22;
   const opacity = offset === 0 ? 1 : abs === 1 ? 0.82 : 0.45;
   const zIndex = 20 - abs;
@@ -59,7 +59,7 @@ function ThemePreviewPhone({ template, featured }: { template: StoreTemplate; fe
           ? 'shadow-[0_28px_56px_-20px_rgba(88,101,242,0.35),0_12px_24px_-8px_rgba(15,15,25,0.2)]'
           : 'shadow-[0_16px_40px_-16px_rgba(15,15,25,0.28)]',
       )}
-      style={{ width: 156, height: 278 }}
+      style={{ width: 210, height: 374 }}
     >
       <div className="relative h-full overflow-hidden rounded-[1.4rem] bg-neutral-900">
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -122,7 +122,7 @@ export function ThemeCarousel({
         />
 
         <div
-          className="relative mx-auto h-[300px] max-w-[520px]"
+          className="relative mx-auto h-[400px] w-full max-w-[760px]"
           style={{ perspective: '1600px' }}
         >
           <div className="absolute inset-0" style={{ transformStyle: 'preserve-3d' }}>
@@ -158,7 +158,7 @@ export function ThemeCarousel({
         </div>
       </div>
 
-      <div className="mt-1 flex items-center justify-center gap-5">
+      <div className="mt-9 flex items-center justify-center gap-5">
         <button
           type="button"
           onClick={() => go(-1)}

@@ -2,13 +2,14 @@ import { DateTime } from 'luxon';
 import type Stripe from 'stripe';
 import { env } from '../../config/env';
 import { AppError } from '../../utils/AppError';
-import { BookingTypeModel, BookingModel, type BookingTypeDoc, type BookingDoc } from '../../models/Booking';
+import { BookingTypeModel, BookingModel, BlockedTimeModel, type BookingTypeDoc, type BookingDoc, type BlockedTimeDoc } from '../../models/Booking';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { OrderModel } from '../../models/Order';
 import { uniqueSlug } from '../../lib/slug';
 import { enqueueEmail } from '../../lib/jobs';
 import { recordAudit } from '../../lib/audit';
 import { canAcceptPayments } from '../payments/connect.service';
+import { upsertCustomerLead } from '../leads/leads.service';
 import { computeSlots, isSlotOpen } from './availability';
 
 function publicType(bt: BookingTypeDoc) {
@@ -17,13 +18,35 @@ function publicType(bt: BookingTypeDoc) {
     title: bt.title,
     slug: bt.slug,
     description: bt.description,
+    shortDescription: bt.shortDescription,
+    bottomTitle: bt.bottomTitle,
+    ctaLabel: bt.ctaLabel,
+    coverImageUrl: bt.coverImageUrl,
+    coverPublicId: bt.coverPublicId,
+    thumbnailStyle: bt.thumbnailStyle,
+    thumbnailButtonLabel: bt.thumbnailButtonLabel,
+    discountPriceCents: bt.discountPriceCents,
+    discountEnabled: bt.discountEnabled,
     durationMin: bt.durationMin,
     priceCents: bt.priceCents,
     currency: bt.currency,
     timezone: bt.timezone,
-    status: bt.status,
+    weeklyWindows: bt.weeklyWindows,
+    minNoticeMin: bt.minNoticeMin,
+    maxHorizonDays: bt.maxHorizonDays,
+    bufferBeforeMin: bt.bufferBeforeMin,
+    bufferAfterMin: bt.bufferAfterMin,
+    bufferBeforeEnabled: bt.bufferBeforeEnabled,
+    bufferAfterEnabled: bt.bufferAfterEnabled,
+    dailyCap: bt.dailyCap,
+    maxAttendees: bt.maxAttendees,
+    calendarLabel: bt.calendarLabel,
     meetingProvider: bt.meetingProvider,
+    meetingUrl: bt.meetingUrl,
     intakeQuestions: bt.intakeQuestions,
+    confirmSubject: bt.confirmSubject,
+    confirmBody: bt.confirmBody,
+    status: bt.status,
   };
 }
 
@@ -43,6 +66,11 @@ export async function createBookingType(creatorId: string, input: Record<string,
   return publicType(bt);
 }
 
+export async function getBookingType(creatorId: string, id: string) {
+  const bt = await owned(creatorId, id);
+  return publicType(bt);
+}
+
 export async function listBookingTypes(creatorId: string) {
   const items = await BookingTypeModel.find({ creatorId, status: { $ne: 'archived' } }).sort({ createdAt: -1 });
   return items.map(publicType);
@@ -50,9 +78,12 @@ export async function listBookingTypes(creatorId: string) {
 
 export async function updateBookingType(creatorId: string, id: string, patch: Record<string, unknown>) {
   const bt = await owned(creatorId, id);
-  const fields = ['title', 'description', 'durationMin', 'priceCents', 'currency', 'timezone',
+  const fields = ['title', 'description', 'shortDescription', 'bottomTitle', 'ctaLabel',
+    'coverImageUrl', 'coverPublicId', 'thumbnailStyle', 'thumbnailButtonLabel', 'discountPriceCents', 'discountEnabled',
+    'durationMin', 'priceCents', 'currency', 'timezone',
     'weeklyWindows', 'minNoticeMin', 'maxHorizonDays', 'bufferBeforeMin', 'bufferAfterMin',
-    'dailyCap', 'meetingProvider', 'meetingUrl', 'intakeQuestions'] as const;
+    'bufferBeforeEnabled', 'bufferAfterEnabled', 'dailyCap', 'maxAttendees', 'calendarLabel',
+    'meetingProvider', 'meetingUrl', 'intakeQuestions', 'confirmSubject', 'confirmBody'] as const;
   for (const f of fields) if (patch[f] !== undefined) (bt as unknown as Record<string, unknown>)[f] = patch[f];
   await bt.save();
   return publicType(bt);
@@ -92,6 +123,51 @@ export async function listBookings(creatorId: string) {
     status: b.status,
     meetingUrl: b.meetingUrl,
   }));
+}
+
+// ---- Blocked time (creator-wide calendar holds) ----
+
+function publicBlock(b: BlockedTimeDoc) {
+  return { id: b.id, startAt: b.startAt, endAt: b.endAt, allDay: b.allDay, note: b.note };
+}
+
+export async function listBlocks(creatorId: string, fromIso?: string, toIso?: string) {
+  const query: Record<string, unknown> = { creatorId };
+  // Blocks overlapping the [from, to] window — ignore unparseable dates so a bad
+  // query param can never turn into a Mongo CastError (500).
+  const from = fromIso ? new Date(fromIso) : null;
+  const to = toIso ? new Date(toIso) : null;
+  if (to && !Number.isNaN(to.getTime())) query.startAt = { $lt: to };
+  if (from && !Number.isNaN(from.getTime())) query.endAt = { $gt: from };
+  const blocks = await BlockedTimeModel.find(query).sort({ startAt: 1 }).limit(500);
+  return blocks.map(publicBlock);
+}
+
+export async function createBlock(
+  creatorId: string,
+  input: { startIso: string; endIso: string; allDay?: boolean; note?: string },
+) {
+  const startAt = new Date(input.startIso);
+  const endAt = new Date(input.endIso);
+  if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {
+    throw AppError.badRequest('Invalid start or end time');
+  }
+  if (endAt <= startAt) throw AppError.badRequest('End time must be after the start time');
+  const block = await BlockedTimeModel.create({
+    creatorId,
+    startAt,
+    endAt,
+    allDay: input.allDay ?? false,
+    note: input.note ?? '',
+  });
+  recordAudit({ action: 'booking.time_blocked', actorId: creatorId, actorType: 'user', creatorId, targetType: 'blocked_time', targetId: block.id });
+  return publicBlock(block);
+}
+
+export async function deleteBlock(creatorId: string, id: string): Promise<void> {
+  const res = await BlockedTimeModel.deleteOne({ _id: id, creatorId });
+  if (res.deletedCount === 0) throw AppError.notFound('Blocked time not found');
+  recordAudit({ action: 'booking.time_unblocked', actorId: creatorId, actorType: 'user', creatorId, targetType: 'blocked_time', targetId: id });
 }
 
 // ---- Public booking flow ----
@@ -142,6 +218,7 @@ export async function createBooking(input: {
   const endAt = new Date(startAt.getTime() + bt.durationMin * 60_000);
 
   const paid = bt.priceCents > 0;
+  const capacity = Math.max(1, bt.maxAttendees ?? 1);
   let booking: BookingDoc;
   try {
     booking = await BookingModel.create({
@@ -156,12 +233,33 @@ export async function createBooking(input: {
       status: paid ? 'pending_payment' : 'confirmed',
       meetingUrl: paid ? '' : bt.meetingUrl,
     });
-  } catch {
-    throw AppError.conflict('That time was just taken');
+  } catch (err) {
+    // Duplicate-key on {bookingTypeId, startAt, buyerEmail} means this buyer
+    // already holds a seat in this slot; anything else is a real error.
+    if (typeof err === 'object' && err !== null && (err as { code?: number }).code === 11000) {
+      throw AppError.conflict('You already have a booking for that time');
+    }
+    throw err;
+  }
+
+  // Race-safe capacity guard (this mongod is standalone, so no transactions).
+  // ObjectIds are monotonic by creation, so counting active seats created at or
+  // before this one gives each concurrent request a deterministic rank: exactly
+  // the first `capacity` seats survive, the rest roll themselves back.
+  const seatRank = await BookingModel.countDocuments({
+    bookingTypeId: bt._id,
+    startAt,
+    status: { $in: ['confirmed', 'pending_payment'] },
+    _id: { $lte: booking._id },
+  });
+  if (seatRank > capacity) {
+    await BookingModel.deleteOne({ _id: booking._id });
+    throw AppError.conflict('That time is fully booked');
   }
 
   if (!paid) {
     await sendBookingConfirmation(booking, bt);
+    await upsertCustomerLead(creatorId, booking.buyerEmail, booking.buyerName).catch(() => {});
     recordAudit({ action: 'booking.created_free', actorType: 'anonymous', creatorId, targetType: 'booking', targetId: booking.id });
     return { status: 'confirmed' as const, manageToken: booking.manageToken };
   }
@@ -224,6 +322,7 @@ export async function confirmBookingFromSession(session: Stripe.Checkout.Session
   booking.set('orderId', order._id);
   await booking.save();
   await sendBookingConfirmation(booking, bt);
+  await upsertCustomerLead(String(booking.creatorId), booking.buyerEmail, booking.buyerName).catch(() => {});
   recordAudit({ action: 'booking.confirmed_paid', actorType: 'system', creatorId: String(booking.creatorId), targetType: 'booking', targetId: booking.id });
 }
 
@@ -250,6 +349,45 @@ export async function cancelBooking(token: string): Promise<void> {
   booking.cancelledAt = new Date();
   await booking.save();
   recordAudit({ action: 'booking.cancelled', actorType: 'anonymous', creatorId: String(booking.creatorId), targetType: 'booking', targetId: booking.id });
+}
+
+// A paid booking sits in `pending_payment` while the buyer is at Stripe. If they
+// abandon checkout the slot would otherwise be held forever, so we release it
+// after this window. Stripe sessions live ~24h, but the slot hold should free up
+// much sooner so other buyers can grab it.
+const PENDING_BOOKING_TTL_MS = 30 * 60 * 1000; // 30 minutes
+let bookingSweepTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Cancel abandoned `pending_payment` bookings older than the TTL, releasing
+ * their slot. Idempotent and safe to run from multiple processes.
+ */
+export async function expireStalePendingBookings(): Promise<number> {
+  const cutoff = new Date(Date.now() - PENDING_BOOKING_TTL_MS);
+  const res = await BookingModel.updateMany(
+    { status: 'pending_payment', createdAt: { $lt: cutoff } },
+    { $set: { status: 'cancelled', cancelledAt: new Date() } },
+  );
+  const n = res.modifiedCount ?? 0;
+  if (n > 0) {
+    recordAudit({ action: 'booking.pending_expired', actorType: 'system', metadata: { count: n } });
+  }
+  return n;
+}
+
+/** Start the periodic sweep that expires abandoned pending bookings. */
+export function startBookingMaintenance(): void {
+  if (bookingSweepTimer) return;
+  // Run once on boot to catch anything stranded during downtime, then on an interval.
+  void expireStalePendingBookings().catch(() => undefined);
+  bookingSweepTimer = setInterval(() => void expireStalePendingBookings().catch(() => undefined), 5 * 60 * 1000);
+}
+
+export function stopBookingMaintenance(): void {
+  if (bookingSweepTimer) {
+    clearInterval(bookingSweepTimer);
+    bookingSweepTimer = null;
+  }
 }
 
 /** Published booking types for a storefront. */

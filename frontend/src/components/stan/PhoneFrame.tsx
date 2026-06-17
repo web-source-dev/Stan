@@ -1,24 +1,33 @@
 import type { ReactNode } from 'react';
 import { cn } from '@/lib/cn';
 
-/** Stan-style iPhone preview frame for live storefront previews. */
+/** Stan-style iPhone preview — matches reference product editor screenshots. */
 export function PhoneFrame({
   children,
   className = '',
+  contentClassName = '',
+  maxWidth = 324,
 }: {
   children: ReactNode;
   className?: string;
+  contentClassName?: string;
+  /** Max device width in px (My Store preview is larger than the editor's). */
+  maxWidth?: number;
 }) {
   return (
-    <div className={cn('mx-auto w-full max-w-[320px]', className)}>
+    <div className={cn('mx-auto w-full', className)} style={{ maxWidth }}>
       <div
-        className="relative overflow-hidden rounded-[2.75rem] bg-[#121212] p-[10px] shadow-[0_32px_64px_-24px_rgba(15,15,25,0.45)]"
-        style={{ aspectRatio: '9/19' }}
+        className="relative overflow-hidden rounded-[2.65rem] bg-[#1c1c1e] p-[6px] shadow-[0_28px_56px_-20px_rgba(15,15,25,0.5)]"
+        style={{ aspectRatio: '9 / 19.2' }}
       >
-        {/* Dynamic island */}
-        <div className="pointer-events-none absolute left-1/2 top-4 z-20 h-[20px] w-[80px] -translate-x-1/2 rounded-full bg-black/90" />
-        <div className="h-full overflow-hidden rounded-[2.15rem] bg-white ring-1 ring-black/10">
-          <div className="stan-phone-scroll h-full overflow-y-auto overflow-x-hidden overscroll-contain">
+        <div className="pointer-events-none absolute left-1/2 top-[18px] z-20 h-[22px] w-[84px] -translate-x-1/2 rounded-full bg-black" />
+        <div className="h-full overflow-hidden rounded-[2.05rem] bg-white">
+          <div
+            className={cn(
+              'stan-phone-scroll h-full overflow-y-auto overflow-x-hidden overscroll-contain pt-7',
+              contentClassName,
+            )}
+          >
             {children}
           </div>
         </div>

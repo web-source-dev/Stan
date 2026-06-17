@@ -22,6 +22,7 @@ export type { StoreTemplate, StoreTemplateTheme } from './templates/types';
 export { STORE_TEMPLATES, getTemplate } from './templates/registry';
 
 export { makeId, createBlock, defaultStoreBlocks, hydrateBlocks } from './runtime/hydrate';
+export { applyItemOrder } from './runtime/item-order';
 export {
   FONT_PAIRS,
   fontStack,

@@ -4,6 +4,7 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
 import { UserModel } from '../../models/User';
+import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { RefreshSessionModel } from '../../models/RefreshSession';
 import { AppError } from '../../utils/AppError';
 import { recordAudit } from '../../lib/audit';
@@ -111,6 +112,9 @@ accountRouter.post(
     user.set('status', 'deactivated');
     user.set('tokenVersion', (user.get('tokenVersion') ?? 0) + 1);
     await user.save();
+    // Take the public storefront down so a deactivated account is no longer
+    // reachable or purchasable.
+    await CreatorProfileModel.updateOne({ userId: user.id }, { $set: { published: false } });
     await RefreshSessionModel.updateMany({ userId: user.id, revokedAt: { $exists: false } }, { $set: { revokedAt: new Date() } });
     recordAudit({ action: 'account.delete_requested', actorType: 'user', actorId: user.id, creatorId: user.id });
     res.json({ ok: true });

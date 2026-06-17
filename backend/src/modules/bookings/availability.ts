@@ -1,6 +1,6 @@
 import { DateTime } from 'luxon';
 import type { BookingTypeDoc } from '../../models/Booking';
-import { BookingModel } from '../../models/Booking';
+import { BookingModel, BlockedTimeModel } from '../../models/Booking';
 
 export interface Slot {
   startIso: string; // UTC instant
@@ -27,8 +27,13 @@ export async function computeSlots(bt: BookingTypeDoc, fromIso?: string, toIso?:
   const rangeEnd = DateTime.min(latest, toIso ? DateTime.fromISO(toIso, { zone: 'utc' }) : latest);
   if (rangeStart >= rangeEnd) return [];
 
+  // Buffers only apply when their toggle is enabled (the minutes can be left set
+  // while the toggle is off, in which case availability must ignore them).
+  const bufBefore = bt.bufferBeforeEnabled ? bt.bufferBeforeMin : 0;
+  const bufAfter = bt.bufferAfterEnabled ? bt.bufferAfterMin : 0;
+
   // Pull existing active bookings overlapping the window (with buffer padding).
-  const padMin = Math.max(bt.bufferBeforeMin, bt.bufferAfterMin);
+  const padMin = Math.max(bufBefore, bufAfter);
   const existing: ExistingBooking[] = await BookingModel.find({
     bookingTypeId: bt._id,
     status: { $in: ['confirmed', 'pending_payment'] },
@@ -45,14 +50,41 @@ export async function computeSlots(bt: BookingTypeDoc, fromIso?: string, toIso?:
     if (dayKey) perDayCount.set(dayKey, (perDayCount.get(dayKey) ?? 0) + 1);
   }
 
+  // Group sessions: several attendees share the same start instant. Bookings at
+  // the exact same start are the same session (handled by the capacity check
+  // below), so they must NOT count as overlap conflicts — only genuinely
+  // different overlapping sessions block a candidate slot.
+  const capacity = Math.max(1, bt.maxAttendees ?? 1);
+  const sameStartCount = (startUtc: DateTime): number => {
+    const t = startUtc.toMillis();
+    return existing.filter((b) => DateTime.fromJSDate(b.startAt).toMillis() === t).length;
+  };
+
   const conflicts = (startUtc: DateTime, endUtc: DateTime): boolean => {
-    const s = startUtc.minus({ minutes: bt.bufferBeforeMin });
-    const e = endUtc.plus({ minutes: bt.bufferAfterMin });
+    const s = startUtc.minus({ minutes: bufBefore });
+    const e = endUtc.plus({ minutes: bufAfter });
+    const t = startUtc.toMillis();
     return existing.some((b) => {
-      const bs = DateTime.fromJSDate(b.startAt).minus({ minutes: bt.bufferBeforeMin });
-      const be = DateTime.fromJSDate(b.endAt).plus({ minutes: bt.bufferAfterMin });
-      return s < be && e > bs; // interval overlap
+      const bs = DateTime.fromJSDate(b.startAt);
+      if (bs.toMillis() === t) return false; // same group session — capacity handles it
+      const be = DateTime.fromJSDate(b.endAt);
+      return s < be && e > bs; // interval overlap (buffer applied once, to the candidate)
     });
+  };
+
+  // Creator-wide blocked intervals (vacation, one-off holds) overlapping the window.
+  const blocks = await BlockedTimeModel.find({
+    creatorId: bt.creatorId,
+    startAt: { $lt: rangeEnd.toJSDate() },
+    endAt: { $gt: rangeStart.toJSDate() },
+  })
+    .select('startAt endAt')
+    .lean();
+  const blockRanges = blocks.map((b) => ({ s: b.startAt.getTime(), e: b.endAt.getTime() }));
+  const isBlocked = (startUtc: DateTime, endUtc: DateTime): boolean => {
+    const s = startUtc.toMillis();
+    const e = endUtc.toMillis();
+    return blockRanges.some((b) => s < b.e && e > b.s);
   };
 
   const slots: Slot[] = [];
@@ -79,11 +111,27 @@ export async function computeSlots(bt: BookingTypeDoc, fromIso?: string, toIso?:
       while (cursorMin + bt.durationMin <= w.endMinute) {
         if (bt.dailyCap > 0 && (capPerDay.get(dayKey) ?? 0) >= bt.dailyCap) break;
 
-        const startLocal = day.plus({ minutes: cursorMin });
+        // Build the local start by setting wall-clock components in the zone
+        // rather than adding minutes to midnight. Across a DST transition the day
+        // is 23 or 25 hours long, so arithmetic from midnight drifts the time
+        // (e.g. a 9:00 slot would land at 8:00/10:00); luxon's set() resolves the
+        // correct offset for the wall-clock time instead.
+        const startLocal = day.set({
+          hour: Math.floor(cursorMin / 60),
+          minute: cursorMin % 60,
+          second: 0,
+          millisecond: 0,
+        });
         const startUtc = startLocal.toUTC();
         const endUtc = startUtc.plus({ minutes: bt.durationMin });
 
-        if (startUtc >= rangeStart && endUtc <= rangeEnd && !conflicts(startUtc, endUtc)) {
+        if (
+          startUtc >= rangeStart &&
+          endUtc <= rangeEnd &&
+          !conflicts(startUtc, endUtc) &&
+          !isBlocked(startUtc, endUtc) &&
+          sameStartCount(startUtc) < capacity // seats remain in this (possibly group) session
+        ) {
           slots.push({ startIso: startUtc.toISO()!, endIso: endUtc.toISO()! });
         }
         cursorMin += bt.durationMin;

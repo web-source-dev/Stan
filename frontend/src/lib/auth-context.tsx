@@ -13,7 +13,7 @@ interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  signup: (email: string, password: string) => Promise<void>;
+  signup: (email: string, password: string, ref?: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   /** Authenticated request that attaches the access token and refreshes on 401. */
@@ -70,10 +70,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSession(res);
   }, []);
 
-  const signup = useCallback(async (email: string, password: string) => {
+  const signup = useCallback(async (email: string, password: string, ref?: string) => {
     const res = await apiRequest<AuthResponse>('/api/auth/signup', {
       method: 'POST',
-      body: { email, password },
+      body: { email, password, ref },
     });
     setSession(res);
   }, []);

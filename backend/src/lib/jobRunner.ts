@@ -22,9 +22,14 @@ const handlers: Record<string, JobHandler> = {
 
 const POLL_INTERVAL_MS = 2000;
 const BACKOFF_BASE_MS = 5000;
+// A job left in `processing` longer than this is assumed orphaned (the worker
+// crashed mid-handler) and is reclaimed for retry. Handlers must be idempotent.
+const STUCK_JOB_MS = 2 * 60 * 1000;
+const RECLAIM_INTERVAL_MS = 30 * 1000;
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
+let lastReclaim = 0;
 
 /** Atomically claim the next due, pending job. */
 async function claimNextJob(): Promise<JobDoc | null> {
@@ -32,6 +37,24 @@ async function claimNextJob(): Promise<JobDoc | null> {
     { status: 'pending', runAt: { $lte: new Date() } },
     { $set: { status: 'processing', lockedAt: new Date() }, $inc: { attempts: 1 } },
     { sort: { runAt: 1 }, new: true },
+  );
+}
+
+/**
+ * Recover jobs orphaned by a crashed worker: a job stuck in `processing` past
+ * the timeout is requeued (if attempts remain) or failed. Without this, a crash
+ * mid-handler would strand the job forever, since the runner only claims
+ * `pending` rows.
+ */
+async function reclaimStuckJobs(): Promise<void> {
+  const cutoff = new Date(Date.now() - STUCK_JOB_MS);
+  await JobModel.updateMany(
+    { status: 'processing', lockedAt: { $lt: cutoff }, $expr: { $lt: ['$attempts', '$maxAttempts'] } },
+    { $set: { status: 'pending', runAt: new Date() }, $unset: { lockedAt: '' } },
+  );
+  await JobModel.updateMany(
+    { status: 'processing', lockedAt: { $lt: cutoff }, $expr: { $gte: ['$attempts', '$maxAttempts'] } },
+    { $set: { status: 'failed', lastError: 'Worker crashed or timed out (stuck in processing)' } },
   );
 }
 
@@ -70,6 +93,11 @@ async function tick(): Promise<void> {
   if (running) return;
   running = true;
   try {
+    // Periodically recover jobs orphaned by a crashed worker.
+    if (Date.now() - lastReclaim > RECLAIM_INTERVAL_MS) {
+      lastReclaim = Date.now();
+      await reclaimStuckJobs();
+    }
     // Drain a small batch each tick to avoid starving under load.
     for (let i = 0; i < 10; i += 1) {
       const processed = await processOne();

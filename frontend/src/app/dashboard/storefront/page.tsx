@@ -11,7 +11,7 @@ import { LandingPagesTab } from '@/components/stan/LandingPagesTab';
 import { useAuth } from '@/lib/auth-context';
 import {
   IconExternal,
-  IconGrid,
+  IconStore,
   IconPalette,
 } from '@/components/icons';
 import type { CreatorProfile } from '@/lib/types';
@@ -46,23 +46,23 @@ function MyStore() {
   }
 
   return (
-    <DashboardShell title="My Store" maxWidth="max-w-[1280px]" hideSubtitle>
+    <DashboardShell title="My Store" maxWidth="max-w-[1280px]" hideSubtitle hideTitle>
       <PaymentBanner />
 
       <Tabs
         variant="stan"
-        className="mb-8"
+        className="mb-6"
         value={tab}
         onChange={setTab}
         tabs={[
-          { value: 'store', label: 'Store', icon: <IconGrid size={16} /> },
-          { value: 'landing', label: 'Landing Pages', icon: <IconExternal size={16} /> },
-          { value: 'design', label: 'Edit Design', icon: <IconPalette size={16} /> },
+          { value: 'store', label: 'Store', icon: <IconStore size={18} /> },
+          { value: 'landing', label: 'Landing Pages', icon: <IconExternal size={18} /> },
+          { value: 'design', label: 'Edit Design', icon: <IconPalette size={18} /> },
         ]}
       />
 
       {tab === 'store' && (
-        <StoreContentEditor profile={profile} onEditDesign={() => setTab('design')} />
+        <StoreContentEditor profile={profile} onProfileUpdated={setProfile} />
       )}
 
       {tab === 'landing' && <LandingPagesTab username={profile.username} />}

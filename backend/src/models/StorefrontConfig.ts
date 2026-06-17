@@ -51,10 +51,10 @@ const themeSchema = new Schema(
     // Secondary accent for two-tone banners + mesh/gradient backgrounds.
     accent2: { type: String, default: '' },
     // How the page background is painted.
-    backgroundStyle: { type: String, enum: ['solid', 'gradient', 'mesh'], default: 'solid' },
-    spacing: { type: String, enum: ['compact', 'comfortable', 'airy'], default: '' },
-    cardChrome: { type: String, enum: ['elevated', 'flat', 'glass'], default: '' },
-    motion: { type: String, enum: ['none', 'subtle', 'expressive'], default: '' },
+    backgroundStyle: { type: String, enum: ['flat', 'solid', 'gradient', 'mesh'], default: 'solid' },
+    spacing: { type: String, enum: ['compact', 'comfortable', 'airy'], default: 'comfortable' },
+    cardChrome: { type: String, enum: ['elevated', 'flat', 'glass'], default: 'elevated' },
+    motion: { type: String, enum: ['none', 'subtle', 'expressive'], default: 'subtle' },
     // Id of the last-applied design template (drives the active highlight in the
     // builder). Empty when the creator started from scratch.
     templateId: { type: String, default: '' },

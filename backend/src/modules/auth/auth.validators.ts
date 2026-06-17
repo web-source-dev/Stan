@@ -8,6 +8,7 @@ const password = z
 export const signupSchema = z.object({
   email: z.string().email().toLowerCase(),
   password,
+  ref: z.string().max(40).optional(),
 });
 
 export const loginSchema = z.object({
@@ -26,6 +27,11 @@ export const resetPasswordSchema = z.object({
 
 export const verifyEmailSchema = z.object({
   token: z.string().min(10),
+});
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: password,
 });
 
 export type SignupInput = z.infer<typeof signupSchema>;

@@ -45,6 +45,8 @@ cp frontend/.env.local.example frontend/.env.local
 
 **Frontend:** `NEXT_PUBLIC_API_URL` (default `http://localhost:4000`).
 
+> **Full env guide:** see [ENV_SETUP.md](./ENV_SETUP.md) for every variable, how to obtain each key, and production checklist.
+
 > Dev convenience: when `RESEND_API_KEY` is blank in non-production, the
 > email-verification gate is bypassed, so you can publish a store without
 > clicking a verification link.
@@ -103,12 +105,17 @@ Log in as **maya@demo.com**. Each dashboard nav item maps to a feature:
 | **Email Flows** | `/dashboard/emails` | **Flows** tab: create a multi-step drip (fires on purchase/signup — see §5). **Broadcasts** tab: send to a segment. |
 | **AutoDM** | `/dashboard/autodm` | Connect Instagram (demo), create keyword rules, pause/delete. |
 | **Settings** | `/dashboard/settings` | 6 tabs: Profile, Integrations, Billing (switch Monthly/Yearly/Bundle), Payments (Stripe Connect), Email Notifications (toggles persist), Security (2FA, sessions, delete). |
+| **Customer portal** | `/<username>/account` | Passwordless buyer login (email → 6-digit code). Shows everything the buyer purchased — products (download), courses (progress + continue), bookings (manage/join), and order history — in one place. Linked from the bottom of each public store. |
 
 ### End-to-end purchase (demo checkout)
 With Stripe unconfigured, dev checkout simulates a paid order:
 1. Open `/maya`, click **Buy now** on a product → complete the simulated checkout.
 2. The buyer gets an access link, the order appears under **Income**, the buyer
-   is added to **Customers**, and any enabled **purchase** email flow fires.
+   is added to **Customers** (with their name + running Purchases/Spent totals),
+   and any enabled **purchase** email flow fires.
+3. The buyer can revisit everything at `/<username>/account` — sign in with the
+   checkout email and the 6-digit code (in dev the code is returned in the API
+   response / logged to the backend console, so no inbox is needed).
 
 ---
 

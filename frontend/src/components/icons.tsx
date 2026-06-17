@@ -37,6 +37,14 @@ export const IconBox = (p: IconProps) => (
 export const IconBook = (p: IconProps) => (
   <Svg {...p}><path d="M4 4.5A1.5 1.5 0 0 1 5.5 3H18a1 1 0 0 1 1 1v15a1 1 0 0 1-1 1H5.5A1.5 1.5 0 0 0 4 21.5z" /><path d="M4 17.5A1.5 1.5 0 0 1 5.5 16H19" /></Svg>
 );
+/** Folder — digital product thumbnails in My Store list. */
+export const IconFolder = (p: IconProps) => (
+  <Svg {...p}><path d="M4 6.5A1.5 1.5 0 0 1 5.5 5H9l1.5 2H18.5A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z" /></Svg>
+);
+/** Graduation cap — course items in My Store list. */
+export const IconGraduationCap = (p: IconProps) => (
+  <Svg {...p}><path d="M12 3 2 8.5 12 14l10-5.5z" /><path d="M6 11.5V16a6 6 0 0 0 12 0v-4.5" /><path d="M20 8.5V14" /></Svg>
+);
 export const IconCalendar = (p: IconProps) => (
   <Svg {...p}><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 9h18M8 3v4M16 3v4" /></Svg>
 );
@@ -53,7 +61,10 @@ export const IconMail = (p: IconProps) => (
   <Svg {...p}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="m4 7 8 6 8-6" /></Svg>
 );
 export const IconSettings = (p: IconProps) => (
-  <Svg {...p}><circle cx="12" cy="12" r="3" /><path d="M12 2.5v2M12 19.5v2M21.5 12h-2M4.5 12h-2M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4M18.7 18.7l-1.4-1.4M6.7 6.7 5.3 5.3" /></Svg>
+  <Svg {...p}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></Svg>
+);
+export const IconHelp = (p: IconProps) => (
+  <Svg {...p}><circle cx="12" cy="12" r="10" /><path d="M9.1 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></Svg>
 );
 export const IconCard = (p: IconProps) => (
   <Svg {...p}><rect x="2.5" y="5" width="19" height="14" rx="2.5" /><path d="M2.5 9.5h19M6 15h4" /></Svg>
@@ -186,12 +197,10 @@ export const IconBell = (p: IconProps) => (
 export function Logo({ className = '', glyphOnly = false }: { className?: string; glyphOnly?: boolean }) {
   return (
     <span className={`inline-flex items-center gap-2 ${className}`}>
-      <span className="grid h-7 w-7 place-items-center rounded-lg bg-brand-gradient text-white shadow-glow">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M13 2 4 14h7l-1 8 9-12h-7z" />
-        </svg>
+      <span className="grid h-8 w-8 place-items-center rounded-full bg-brand-gradient font-extrabold text-white shadow-glow">
+        <span className="text-[16px] leading-none">$</span>
       </span>
-      {!glyphOnly && <span className="text-[1.0625rem] font-bold tracking-tight">Stan</span>}
+      {!glyphOnly && <span className="text-[1.25rem] font-extrabold tracking-tight text-ink">Stan</span>}
     </span>
   );
 }

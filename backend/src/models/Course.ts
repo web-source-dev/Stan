@@ -16,9 +16,30 @@ const courseSchema = new Schema(
 
     priceCents: { type: Number, default: 0, min: 0 },
     currency: { type: String, default: 'usd', lowercase: true },
+    discountPriceCents: { type: Number, default: 0, min: 0 },
+    discountEnabled: { type: Boolean, default: false },
+    billingInterval: { type: String, enum: ['one_time', 'month', 'year'], default: 'one_time' },
 
     coverImageUrl: { type: String, default: '' },
     coverPublicId: { type: String, default: '' },
+
+    /** Storefront thumbnail card */
+    thumbnailStyle: { type: String, enum: ['button', 'callout', 'preview'], default: 'callout' },
+    thumbnailButtonLabel: { type: String, maxlength: 80, default: '' },
+    bottomTitle: { type: String, maxlength: 140, default: '' },
+    ctaLabel: { type: String, maxlength: 80, default: 'PURCHASE' },
+
+    /** Course player homepage (inside the course after purchase) */
+    homepageTitle: { type: String, maxlength: 140, default: '' },
+    homepageDescription: { type: String, maxlength: 5000, default: '' },
+    homepageCoverImageUrl: { type: String, default: '' },
+    homepageCoverPublicId: { type: String, default: '' },
+    titleFont: { type: String, maxlength: 80, default: 'Plus Jakarta Sans' },
+    backgroundColor: { type: String, maxlength: 20, default: '#f3f6fd' },
+    highlightColor: { type: String, maxlength: 20, default: '#6355FF' },
+
+    confirmSubject: { type: String, maxlength: 200, default: 'Your course enrollment is confirmed' },
+    confirmBody: { type: String, maxlength: 5000, default: '' },
 
     status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft', index: true },
 
@@ -41,6 +62,7 @@ const courseModuleSchema = new Schema(
     creatorId: { type: Types.ObjectId, ref: 'User', required: true, index: true },
     title: { type: String, required: true, trim: true },
     sortOrder: { type: Number, default: 0 },
+    status: { type: String, enum: ['draft', 'published'], default: 'published' },
   },
   { timestamps: true },
 );
@@ -60,13 +82,14 @@ const courseLessonSchema = new Schema(
     title: { type: String, required: true, trim: true },
     type: { type: String, enum: ['video', 'text', 'download'], default: 'video' },
     preview: { type: Boolean, default: false },
+    status: { type: String, enum: ['draft', 'published'], default: 'draft' },
     sortOrder: { type: Number, default: 0 },
 
     durationSec: { type: Number, default: 0 },
     textContent: { type: String, default: '' },
 
-    // Cloudinary references for video/download lessons.
     videoPublicId: { type: String, default: '' },
+    videoUrl: { type: String, default: '' },
     assetPublicId: { type: String, default: '' },
     assetResourceType: { type: String, enum: ['raw', 'video', 'image'], default: 'video' },
     assetFilename: { type: String, default: '' },

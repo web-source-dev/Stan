@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { fetchStorefront } from '@/lib/api';
 import { ApiException } from '@/lib/api';
-import { BuyButton } from '@/components/BuyButton';
+import { ProductCheckoutLink } from '@/components/ProductCheckoutLink';
 import { LeadCapture } from '@/components/LeadCapture';
 import { StorefrontAnalytics } from '@/components/StorefrontAnalytics';
 import { StoreCanvas, type SFItem, defaultStoreBlocks, hydrateBlocks } from '@/storefront';
@@ -58,9 +58,11 @@ export default async function StorefrontPage({ params }: Props) {
         products={products as SFItem[]}
         courses={courses as SFItem[]}
         bookingTypes={bookingTypes as SFItem[]}
-        hrefFor={(kind, slug) => `/${profile.username}/${kind === 'course' ? 'course' : 'book'}/${slug}`}
+        hrefFor={(kind, slug) =>
+          `/${profile.username}/${kind === 'course' ? 'course' : kind === 'booking' ? 'book' : 'product'}/${slug}`
+        }
         buySlot={(item, a, label) => (
-          <BuyButton
+          <ProductCheckoutLink
             username={profile.username}
             slug={item.slug}
             priceCents={item.priceCents}
@@ -92,6 +94,16 @@ export default async function StorefrontPage({ params }: Props) {
               This creator hasn&apos;t added any offers yet.
             </div>
           ) : undefined
+        }
+        footerSlot={
+          <div className="pt-6 text-center">
+            <a
+              href={`/${profile.username}/account`}
+              className="text-sm font-medium underline decoration-dotted underline-offset-4 opacity-70 transition hover:opacity-100"
+            >
+              Already a customer? Access your purchases →
+            </a>
+          </div>
         }
       />
     </>

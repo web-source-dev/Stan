@@ -10,6 +10,7 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
   verifyEmailSchema,
+  changePasswordSchema,
 } from './auth.validators';
 
 export const authRouter = Router();
@@ -39,3 +40,4 @@ authRouter.post('/verify-email', authLimiter, validate({ body: verifyEmailSchema
 authRouter.post('/resend-verification', authLimiter, requireAuth, asyncHandler(ctrl.resendVerification));
 
 authRouter.get('/me', requireAuth, asyncHandler(ctrl.me));
+authRouter.post('/change-password', authLimiter, requireAuth, validate({ body: changePasswordSchema }), asyncHandler(ctrl.changePassword));

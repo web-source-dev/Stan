@@ -8,8 +8,8 @@ function ctx(req: Request) {
 }
 
 export async function signup(req: Request, res: Response) {
-  const { email, password } = req.body;
-  const { user, tokens } = await authService.signup(email, password, ctx(req));
+  const { email, password, ref } = req.body;
+  const { user, tokens } = await authService.signup(email, password, ctx(req), ref);
   setRefreshCookie(res, tokens.refreshToken);
   res.status(201).json({ user, accessToken: tokens.accessToken });
 }
@@ -58,4 +58,9 @@ export async function resendVerification(req: Request, res: Response) {
 export async function me(req: Request, res: Response) {
   const { user } = await authService.getMe(req.user!.id);
   res.json({ user });
+}
+
+export async function changePassword(req: Request, res: Response) {
+  await authService.changePassword(req.user!.id, req.body.currentPassword, req.body.newPassword);
+  res.json({ ok: true });
 }

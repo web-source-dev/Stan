@@ -9,6 +9,11 @@ declare global {
         role: UserRole;
         emailVerified: boolean;
       };
+      /** Populated by requirePortalAuth: the signed-in customer (buyer). */
+      portal?: {
+        email: string;
+        creatorId: string;
+      };
     }
   }
 }

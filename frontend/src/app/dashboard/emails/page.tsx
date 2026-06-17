@@ -1,16 +1,16 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
 import { ApiException } from '@/lib/api';
 import { DashboardShell } from '@/components/DashboardShell';
-import { Card, Button, Field, Textarea, Alert, Badge, Segmented, SectionHeading, Tabs, EmptyState, Skeleton, Select } from '@/components/ui';
-import { IconMail, IconUsers, IconPlus, IconTrash } from '@/components/icons';
+import { Alert, Badge, Skeleton } from '@/components/ui';
+import { IconMail, IconUsers, IconPlus, IconTrash, IconPencil } from '@/components/icons';
+import { cn } from '@/lib/cn';
 
-/* ================= Email Flows ================= */
-
-interface FlowStep { id: string; dayOffset: number; subject: string; body: string; }
-interface Flow { id: string; name: string; trigger: string; enabled: boolean; steps: FlowStep[]; }
+interface FlowStep { id?: string; dayOffset: number; subject: string; body: string; }
+interface Flow { id: string; name: string; trigger: string; enabled: boolean; steps: { id: string; dayOffset: number; subject: string; body: string }[]; }
 
 const TRIGGERS: { value: string; label: string }[] = [
   { value: 'purchase', label: 'After a purchase' },
@@ -18,41 +18,182 @@ const TRIGGERS: { value: string; label: string }[] = [
   { value: 'booking', label: 'After a booking' },
 ];
 
+const CARD = 'rounded-3xl bg-white p-7 shadow-[0_1px_3px_rgba(15,15,25,0.05)]';
+const INPUT = 'w-full rounded-xl border border-line-strong bg-white px-4 py-3 text-[15px] text-ink outline-none transition placeholder:text-neutral-400 focus:border-brand-500';
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return <label className="mb-1.5 block text-sm font-semibold text-[#1a1c3a]">{children}</label>;
+}
+function PrimaryBtn({ children, onClick, disabled, loading }: { children: React.ReactNode; onClick?: () => void; disabled?: boolean; loading?: boolean }) {
+  return (
+    <button onClick={onClick} disabled={disabled || loading} className="inline-flex items-center gap-2 rounded-full bg-brand-600 px-6 py-3 text-[15px] font-bold text-white shadow-soft transition hover:bg-brand-700 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:shadow-none">
+      {loading ? 'Saving…' : children}
+    </button>
+  );
+}
+function OutlineBtn({ children, onClick }: { children: React.ReactNode; onClick?: () => void }) {
+  return (
+    <button onClick={onClick} className="inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-white px-4 py-2 text-sm font-semibold text-[#1a1c3a] transition hover:bg-surface-muted">
+      {children}
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Intro hero — "What are Email Flows?"                                */
+/* ------------------------------------------------------------------ */
+
+function FlowDiagram() {
+  return (
+    <div className="relative mx-auto hidden h-[440px] w-full max-w-[600px] lg:block">
+      <svg viewBox="0 0 600 440" fill="none" className="absolute inset-0 h-full w-full">
+        <path
+          d="M70 410 C 60 330 140 350 150 290 C 162 220 235 250 285 215 C 345 173 405 205 450 140 C 478 100 470 90 495 60"
+          stroke="#c8caf6" strokeWidth="3" strokeDasharray="7 9" strokeLinecap="round"
+        />
+        <path d="M495 60 l-11 14 M495 60 l12 12" stroke="#9aa0ef" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      <div className="absolute left-[40px] top-[230px] flex items-start gap-3">
+        <span className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-brand-50 text-brand-300"><IconUsers size={24} /></span>
+        <div className="w-[150px]"><div className="text-[13px] text-neutral-400">Day 0</div><div className="font-bold leading-snug text-[#1a1c3a]">A customer purchases your product!</div></div>
+      </div>
+      <div className="absolute left-[250px] top-[120px] flex items-start gap-3">
+        <span className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-brand-50 text-brand-400"><IconMail size={24} /></span>
+        <div className="w-[120px]"><div className="text-[13px] text-neutral-400">Day 1</div><div className="font-bold leading-snug text-[#1a1c3a]">Automatic email #1</div></div>
+      </div>
+      <div className="absolute left-[420px] top-[30px] flex items-start gap-3">
+        <span className="grid h-14 w-14 shrink-0 place-items-center rounded-full bg-brand-50 text-brand-400"><IconMail size={24} /></span>
+        <div className="w-[110px]"><div className="text-[13px] text-neutral-400">Day 2</div><div className="font-bold leading-snug text-[#1a1c3a]">Automatic email #2</div></div>
+      </div>
+    </div>
+  );
+}
+
+function EmailFlowsHero({ onCreate }: { onCreate: () => void }) {
+  return (
+    <div className={cn(CARD, 'p-10')}>
+      <div className="grid items-center gap-10 lg:grid-cols-2">
+        <div>
+          <h1 className="text-[48px] font-bold leading-[1.05] tracking-tight text-[#1a1c3a]">What are Email Flows?</h1>
+          <p className="mt-6 text-[17px] font-bold text-neutral-500">Automatically send your customers drip emails after a purchase!</p>
+          <p className="mt-6 text-[15px] text-neutral-500">You can use Email Flows for:</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-[15px] text-neutral-500">
+            <li>Upsells</li>
+            <li>Thank You notes</li>
+            <li>Follow-up instructions</li>
+            <li>… and much more!</li>
+          </ul>
+          <button onClick={onCreate} className="mt-8 inline-flex items-center gap-2 rounded-full bg-brand-600 px-7 py-3.5 text-[15px] font-bold text-white shadow-soft transition hover:bg-brand-700">
+            <IconPlus size={18} /> Create Email Flow
+          </button>
+        </div>
+        <FlowDiagram />
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Builder                                                             */
+/* ------------------------------------------------------------------ */
+
+function FlowBuilder({ initial, onCancel, onSaved }: { initial?: Flow; onCancel: () => void; onSaved: () => void }) {
+  const { authedRequest } = useAuth();
+  const [name, setName] = useState(initial?.name ?? '');
+  const [trigger, setTrigger] = useState(initial?.trigger ?? 'purchase');
+  const [steps, setSteps] = useState<FlowStep[]>(
+    initial?.steps.length ? initial.steps.map((s) => ({ dayOffset: s.dayOffset, subject: s.subject, body: s.body })) : [{ dayOffset: 0, subject: '', body: '' }],
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function save() {
+    setBusy(true); setError('');
+    const payload = { name, trigger, enabled: initial?.enabled ?? true, steps: steps.filter((s) => s.subject && s.body) };
+    try {
+      if (initial) await authedRequest(`/api/flows/${initial.id}`, { method: 'PATCH', body: payload });
+      else await authedRequest('/api/flows', { method: 'POST', body: payload });
+      onSaved();
+    } catch (err) {
+      setError(err instanceof ApiException ? err.message : 'Could not save flow');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className={cn(CARD, 'max-w-2xl')}>
+      <h2 className="text-lg font-bold tracking-tight text-[#1a1c3a]">{initial ? 'Edit email flow' : 'New email flow'}</h2>
+      <p className="mt-0.5 text-sm text-neutral-500">Automatically email customers after a trigger event.</p>
+
+      <div className="mt-6 space-y-5">
+        {error && <Alert kind="error">{error}</Alert>}
+        <div>
+          <FieldLabel>Flow name</FieldLabel>
+          <input className={INPUT} placeholder="Post-purchase welcome" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+        <div>
+          <FieldLabel>Trigger</FieldLabel>
+          <div className="flex flex-wrap gap-2">
+            {TRIGGERS.map((t) => (
+              <button
+                key={t.value}
+                onClick={() => setTrigger(t.value)}
+                className={cn('rounded-full px-4 py-2 text-sm font-semibold transition', trigger === t.value ? 'bg-brand-600 text-white' : 'bg-brand-50 text-brand-600 hover:bg-brand-100')}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <FieldLabel>Emails</FieldLabel>
+          <div className="space-y-4">
+            {steps.map((s, i) => (
+              <div key={i} className="rounded-2xl border border-line bg-surface-subtle p-4">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm font-medium text-[#1a1c3a]">
+                    <span className="grid h-7 w-7 place-items-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">{i + 1}</span>
+                    Send on day
+                    <input type="number" min={0} value={s.dayOffset} onChange={(e) => setSteps((st) => st.map((x, j) => (j === i ? { ...x, dayOffset: Number(e.target.value) } : x)))} className="h-9 w-16 rounded-lg border border-line-strong px-2 text-sm outline-none focus:border-brand-500" />
+                  </div>
+                  {steps.length > 1 && (
+                    <button onClick={() => setSteps((st) => st.filter((_, j) => j !== i))} className="rounded-lg p-1.5 text-neutral-400 transition hover:bg-white hover:text-danger-600"><IconTrash size={15} /></button>
+                  )}
+                </div>
+                <input className={cn(INPUT, 'mb-2')} placeholder="Subject" value={s.subject} onChange={(e) => setSteps((st) => st.map((x, j) => (j === i ? { ...x, subject: e.target.value } : x)))} />
+                <textarea className={cn(INPUT, 'resize-y leading-relaxed')} rows={3} placeholder="Email body…" value={s.body} onChange={(e) => setSteps((st) => st.map((x, j) => (j === i ? { ...x, body: e.target.value } : x)))} />
+              </div>
+            ))}
+            <button onClick={() => setSteps((st) => [...st, { dayOffset: st.length, subject: '', body: '' }])} className="inline-flex items-center gap-1.5 text-sm font-bold text-brand-600 hover:text-brand-700">
+              <IconPlus size={15} /> Add email
+            </button>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3 pt-1">
+          <PrimaryBtn onClick={save} loading={busy} disabled={!name}>{initial ? 'Save changes' : 'Create flow'}</PrimaryBtn>
+          <button onClick={onCancel} className="rounded-full px-4 py-3 text-sm font-semibold text-neutral-500 transition hover:text-ink">Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Flows tab                                                           */
+/* ------------------------------------------------------------------ */
+
 function FlowsTab() {
   const { authedRequest } = useAuth();
   const [flows, setFlows] = useState<Flow[] | null>(null);
   const [creating, setCreating] = useState(false);
-  const [name, setName] = useState('');
-  const [trigger, setTrigger] = useState('purchase');
-  const [steps, setSteps] = useState<{ dayOffset: number; subject: string; body: string }[]>([
-    { dayOffset: 0, subject: '', body: '' },
-  ]);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [editing, setEditing] = useState<Flow | null>(null);
 
   const load = useCallback(async () => {
     const res = await authedRequest<{ flows: Flow[] }>('/api/flows');
     setFlows(res.flows);
   }, [authedRequest]);
   useEffect(() => { void load(); }, [load]);
-
-  function reset() {
-    setName(''); setTrigger('purchase'); setSteps([{ dayOffset: 0, subject: '', body: '' }]); setCreating(false); setError('');
-  }
-
-  async function create() {
-    setBusy(true); setError('');
-    try {
-      await authedRequest('/api/flows', {
-        method: 'POST',
-        body: { name, trigger, enabled: true, steps: steps.filter((s) => s.subject && s.body) },
-      });
-      reset();
-      await load();
-    } catch (err) {
-      setError(err instanceof ApiException ? err.message : 'Could not create flow');
-    } finally { setBusy(false); }
-  }
 
   async function toggle(f: Flow) {
     await authedRequest(`/api/flows/${f.id}`, { method: 'PATCH', body: { enabled: !f.enabled } });
@@ -63,104 +204,53 @@ function FlowsTab() {
     await load();
   }
 
-  if (creating) {
-    return (
-      <Card className="max-w-2xl">
-        <SectionHeading title="New email flow" subtitle="Automatically email customers after a trigger event." />
-        <div className="mt-5 space-y-5">
-          {error && <Alert kind="error">{error}</Alert>}
-          <Field label="Flow name" placeholder="Post-purchase welcome" value={name} onChange={(e) => setName(e.target.value)} />
-          <Select label="Trigger" value={trigger} onChange={(e) => setTrigger(e.target.value)}>
-            {TRIGGERS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-          </Select>
-
-          <div>
-            <span className="mb-2 block text-sm font-medium text-neutral-800">Emails</span>
-            <div className="space-y-4">
-              {steps.map((s, i) => (
-                <div key={i} className="rounded-xl border border-line bg-surface-subtle p-4">
-                  <div className="mb-3 flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                      <span className="grid h-7 w-7 place-items-center rounded-full bg-brand-100 text-xs font-bold text-brand-700">{i + 1}</span>
-                      Send on day
-                      <input
-                        type="number" min={0} value={s.dayOffset}
-                        onChange={(e) => setSteps((st) => st.map((x, j) => j === i ? { ...x, dayOffset: Number(e.target.value) } : x))}
-                        className="h-8 w-16 rounded-lg border border-line-strong px-2 text-sm"
-                      />
-                    </div>
-                    {steps.length > 1 && (
-                      <button onClick={() => setSteps((st) => st.filter((_, j) => j !== i))} className="rounded-lg p-1.5 text-neutral-400 hover:text-danger-600"><IconTrash size={15} /></button>
-                    )}
-                  </div>
-                  <Field placeholder="Subject" value={s.subject} onChange={(e) => setSteps((st) => st.map((x, j) => j === i ? { ...x, subject: e.target.value } : x))} className="mb-2" />
-                  <Textarea placeholder="Email body…" rows={3} value={s.body} onChange={(e) => setSteps((st) => st.map((x, j) => j === i ? { ...x, body: e.target.value } : x))} />
-                </div>
-              ))}
-              <Button variant="ghost" size="sm" onClick={() => setSteps((st) => [...st, { dayOffset: st.length, subject: '', body: '' }])}>
-                <IconPlus size={15} /> Add email
-              </Button>
-            </div>
-          </div>
-
-          <div className="flex gap-2">
-            <Button onClick={create} loading={busy} disabled={!name}>Create flow</Button>
-            <Button variant="ghost" onClick={reset}>Cancel</Button>
-          </div>
-        </div>
-      </Card>
-    );
+  if (flows === null) return <div className={CARD}><Skeleton className="h-64 w-full" /></div>;
+  if (creating || editing) {
+    return <FlowBuilder initial={editing ?? undefined} onCancel={() => { setCreating(false); setEditing(null); }} onSaved={() => { setCreating(false); setEditing(null); void load(); }} />;
   }
+  if (flows.length === 0) return <EmailFlowsHero onCreate={() => setCreating(true)} />;
 
   return (
-    <div>
-      <div className="mb-4 flex items-center justify-between">
+    <div className={CARD}>
+      <div className="mb-5 flex items-center justify-between">
         <div>
-          <div className="text-lg font-semibold tracking-tight">Email Flows</div>
+          <h2 className="text-lg font-bold tracking-tight text-[#1a1c3a]">Email Flows</h2>
           <p className="text-sm text-neutral-500">Automatically send drip emails after a purchase, signup or booking.</p>
         </div>
-        {flows && flows.length > 0 && <Button onClick={() => setCreating(true)}><IconPlus size={16} /> New flow</Button>}
+        <PrimaryBtn onClick={() => setCreating(true)}><IconPlus size={16} /> New flow</PrimaryBtn>
       </div>
 
-      {flows === null ? (
-        <Skeleton className="h-40 w-full" />
-      ) : flows.length === 0 ? (
-        <EmptyState
-          icon={<IconMail size={24} />}
-          title="What are Email Flows?"
-          description="Automatically send your customers drip emails after a purchase — upsells, thank-you notes, follow-up instructions, and much more!"
-          action={<Button onClick={() => setCreating(true)}><IconPlus size={16} /> Create your first flow</Button>}
-        />
-      ) : (
-        <div className="space-y-3">
-          {flows.map((f) => (
-            <Card key={f.id} className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold">{f.name}</span>
-                  <Badge tone={f.enabled ? 'success' : 'neutral'}>{f.enabled ? 'Active' : 'Paused'}</Badge>
-                  <span className="text-xs text-neutral-400">· {TRIGGERS.find((t) => t.value === f.trigger)?.label}</span>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {f.steps.map((s) => (
-                    <span key={s.id} className="rounded-full bg-surface-muted px-2 py-0.5 text-xs text-neutral-600">Day {s.dayOffset}: {s.subject || 'Email'}</span>
-                  ))}
-                  {f.steps.length === 0 && <span className="text-xs text-neutral-400">No emails yet</span>}
-                </div>
+      <div className="space-y-3">
+        {flows.map((f) => (
+          <div key={f.id} className="flex items-start justify-between gap-4 rounded-2xl border border-line bg-white p-5">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-[#1a1c3a]">{f.name}</span>
+                <Badge tone={f.enabled ? 'success' : 'neutral'}>{f.enabled ? 'Active' : 'Paused'}</Badge>
+                <span className="text-xs text-neutral-400">· {TRIGGERS.find((t) => t.value === f.trigger)?.label}</span>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <Button variant="ghost" size="sm" onClick={() => toggle(f)}>{f.enabled ? 'Pause' : 'Enable'}</Button>
-                <button onClick={() => remove(f.id)} className="rounded-lg p-2 text-neutral-400 hover:bg-surface-muted hover:text-danger-600"><IconTrash size={16} /></button>
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {f.steps.map((s) => (
+                  <span key={s.id} className="rounded-full bg-brand-50 px-2.5 py-1 text-xs font-medium text-brand-600">Day {s.dayOffset}: {s.subject || 'Email'}</span>
+                ))}
+                {f.steps.length === 0 && <span className="text-xs text-neutral-400">No emails yet</span>}
               </div>
-            </Card>
-          ))}
-        </div>
-      )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <OutlineBtn onClick={() => setEditing(f)}><IconPencil size={14} /> Edit</OutlineBtn>
+              <OutlineBtn onClick={() => toggle(f)}>{f.enabled ? 'Pause' : 'Enable'}</OutlineBtn>
+              <button onClick={() => remove(f.id)} className="grid h-9 w-9 place-items-center rounded-full text-neutral-400 transition hover:bg-surface-muted hover:text-danger-600"><IconTrash size={16} /></button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
-/* ================= Broadcasts ================= */
+/* ------------------------------------------------------------------ */
+/* Broadcasts tab                                                      */
+/* ------------------------------------------------------------------ */
 
 type Segment = 'all_leads' | 'customers' | 'subscribers';
 interface Broadcast { id: string; subject: string; segment: string; status: string; recipientCount: number; sentAt: string | null; createdAt: string; }
@@ -188,8 +278,7 @@ function BroadcastsTab() {
   useEffect(() => { void loadList(); }, [loadList]);
 
   useEffect(() => {
-    authedRequest<{ count: number }>(`/api/broadcasts/manage/preview?segment=${segment}`)
-      .then((r) => setCount(r.count)).catch(() => setCount(null));
+    authedRequest<{ count: number }>(`/api/broadcasts/manage/preview?segment=${segment}`).then((r) => setCount(r.count)).catch(() => setCount(null));
   }, [authedRequest, segment]);
 
   async function send(e: React.FormEvent) {
@@ -206,44 +295,50 @@ function BroadcastsTab() {
   }
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
-      <Card>
-        <SectionHeading title="New broadcast" />
+    <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
+      <div className={CARD}>
+        <h2 className="text-lg font-bold tracking-tight text-[#1a1c3a]">New broadcast</h2>
         <form onSubmit={send} className="mt-5 space-y-5">
           {error && <Alert kind="error">{error}</Alert>}
           {sent && <Alert kind="success">{sent}</Alert>}
           <div>
-            <span className="mb-2 block text-sm font-medium text-neutral-800">Send to</span>
-            <Segmented value={segment} onChange={setSegment} options={SEGMENTS} size="sm" />
-            <p className="mt-2 flex items-center gap-1.5 text-xs text-neutral-500">
+            <FieldLabel>Send to</FieldLabel>
+            <div className="flex flex-wrap gap-2">
+              {SEGMENTS.map((s) => (
+                <button key={s.value} type="button" onClick={() => setSegment(s.value)} className={cn('rounded-full px-4 py-2 text-sm font-semibold transition', segment === s.value ? 'bg-brand-600 text-white' : 'bg-brand-50 text-brand-600 hover:bg-brand-100')}>
+                  {s.label}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2.5 flex items-center gap-1.5 text-xs text-neutral-500">
               <IconUsers size={14} /> {count === null ? 'Counting recipients…' : `${count} recipient(s)`}
             </p>
           </div>
-          <Field label="Subject" required value={subject} onChange={(e) => setSubject(e.target.value)} />
-          <Textarea label="Message" rows={8} required value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your update…" />
-          <Button type="submit" loading={busy} disabled={count === 0} fullWidth>
-            {count === 0 ? 'No recipients in this segment' : `Send to ${count ?? 0} recipient(s)`}
-          </Button>
+          <div><FieldLabel>Subject</FieldLabel><input className={INPUT} required value={subject} onChange={(e) => setSubject(e.target.value)} /></div>
+          <div><FieldLabel>Message</FieldLabel><textarea className={cn(INPUT, 'resize-y leading-relaxed')} rows={8} required value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your update…" /></div>
+          <button type="submit" disabled={busy || count === 0} className="w-full rounded-full bg-brand-600 py-3.5 text-[15px] font-bold text-white shadow-soft transition hover:bg-brand-700 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:shadow-none">
+            {busy ? 'Sending…' : count === 0 ? 'No recipients in this segment' : `Send to ${count ?? 0} recipient(s)`}
+          </button>
         </form>
-      </Card>
+      </div>
 
       <div>
-        <SectionHeading title="History" subtitle="Your previous broadcasts." />
+        <h2 className="mb-4 text-lg font-bold tracking-tight text-[#1a1c3a]">History</h2>
         {broadcasts.length === 0 ? (
-          <Card className="mt-4 text-center">
-            <div className="mx-auto grid h-11 w-11 place-items-center rounded-xl bg-brand-50 text-brand-600"><IconMail size={20} /></div>
+          <div className={cn(CARD, 'text-center')}>
+            <div className="mx-auto grid h-11 w-11 place-items-center rounded-2xl bg-brand-50 text-brand-600"><IconMail size={20} /></div>
             <p className="mt-3 text-sm text-neutral-500">No broadcasts sent yet.</p>
-          </Card>
+          </div>
         ) : (
-          <div className="mt-4 space-y-2.5">
+          <div className="space-y-2.5">
             {broadcasts.map((b) => (
-              <Card key={b.id} padded={false} className="flex items-center justify-between gap-3 p-4">
+              <div key={b.id} className="flex items-center justify-between gap-3 rounded-2xl bg-white p-4 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">
                 <div className="min-w-0">
-                  <div className="truncate font-medium">{b.subject}</div>
+                  <div className="truncate font-bold text-[#1a1c3a]">{b.subject}</div>
                   <div className="mt-0.5 text-xs text-neutral-500">{SEGMENTS.find((s) => s.value === b.segment)?.label ?? b.segment} · {b.recipientCount} sent</div>
                 </div>
                 <Badge tone={b.status === 'sent' ? 'success' : b.status === 'failed' ? 'danger' : 'warn'}>{b.status}</Badge>
-              </Card>
+              </div>
             ))}
           </div>
         )}
@@ -252,17 +347,44 @@ function BroadcastsTab() {
   );
 }
 
-export default function EmailsPage() {
+/* ------------------------------------------------------------------ */
+/* Page                                                                */
+/* ------------------------------------------------------------------ */
+
+function EmailsView() {
   const [tab, setTab] = useState<'flows' | 'broadcasts'>('flows');
   return (
-    <DashboardShell title="Email Flows" subtitle="Automations and one-off broadcasts to your audience." maxWidth="max-w-6xl">
-      <Tabs
-        className="mb-7"
-        value={tab}
-        onChange={setTab}
-        tabs={[{ value: 'flows', label: 'Flows' }, { value: 'broadcasts', label: 'Broadcasts' }]}
-      />
-      {tab === 'flows' ? <FlowsTab /> : <BroadcastsTab />}
+    <>
+      <div className="rounded-2xl bg-[#fcf6bd] px-6 py-4 text-center text-[15px] font-bold text-[#1a1c3a]">
+        Heads up, customers can&apos;t purchase from you yet! Please{' '}
+        <Link href="/dashboard/settings?tab=payments" className="underline decoration-2 underline-offset-2 hover:text-brand-700">set up your Direct Deposit</Link>{' '}
+        to start selling
+      </div>
+
+      <div className="mt-6 flex gap-3">
+        {(['flows', 'broadcasts'] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={cn(
+              'rounded-xl px-4 py-2.5 text-[15px] font-semibold transition',
+              tab === t ? 'bg-brand-50 text-brand-600 ring-1 ring-inset ring-brand-200' : 'border border-line bg-white text-brand-600 hover:bg-brand-50/50',
+            )}
+          >
+            {t === 'flows' ? 'Flows' : 'Broadcasts'}
+          </button>
+        ))}
+      </div>
+
+      <div className="mt-6">{tab === 'flows' ? <FlowsTab /> : <BroadcastsTab />}</div>
+    </>
+  );
+}
+
+export default function EmailsPage() {
+  return (
+    <DashboardShell title="My Email Flows" maxWidth="max-w-[1280px]" hideTitle hideSubtitle>
+      <EmailsView />
     </DashboardShell>
   );
 }
