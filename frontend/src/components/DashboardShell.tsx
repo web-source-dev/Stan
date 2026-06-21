@@ -13,7 +13,6 @@ import {
   IconClock,
   IconHeart,
   IconMail,
-  IconUsers,
   IconStore,
   IconDollar,
   IconChart,
@@ -28,9 +27,12 @@ import {
   IconChevronRight,
   IconCopy,
   IconCheck,
+  IconLock,
+  IconImage,
 } from '@/components/icons';
 import type { CreatorProfile } from '@/lib/types';
 import { getEnabledFeatures, MORE_FEATURE_KEYS, NAVPREFS_EVENT } from '@/lib/nav-prefs';
+import { PLAN_CHANGED_EVENT } from '@/lib/plan-events';
 import { StanleyAssistant } from '@/components/StanleyAssistant';
 
 interface NavItem {
@@ -44,6 +46,15 @@ interface NavItem {
   accent?: boolean;
   /** Show the small indigo sparkle after the label (Stan's primary items). */
   sparkle?: boolean;
+  /** Plan feature this item requires; locked (→ upgrade) when the plan lacks it. */
+  requiredFeature?: 'bookings' | 'email' | 'autodm';
+}
+
+/** The plan feature flags the sidebar needs to lock gated items. */
+export interface PlanFeatureFlags {
+  bookings: boolean;
+  email: boolean;
+  autodm: boolean;
 }
 
 // Primary nav mirrors Stan v2's order. Items without a built page yet are marked `soon`.
@@ -53,19 +64,33 @@ const PRIMARY_NAV: NavItem[] = [
   { key: 'income', label: 'Income', href: '/dashboard/orders', icon: IconDollar, sparkle: true },
   { key: 'analytics', label: 'Analytics', href: '/dashboard/analytics', icon: IconChart, sparkle: true },
   { key: 'customers', label: 'Customers', href: '/dashboard/leads', icon: IconHeart, sparkle: true },
-  { key: 'community', label: 'Community', href: '/dashboard/community', icon: IconUsers, sparkle: true },
-  { key: 'appointments', label: 'Appointments', href: '/dashboard/bookings', icon: IconClock, sparkle: true },
+  { key: 'appointments', label: 'Appointments', href: '/dashboard/bookings', icon: IconClock, sparkle: true, requiredFeature: 'bookings' },
   { key: 'referrals', label: 'Referrals', href: '/dashboard/referrals', icon: IconSmile, sparkle: true },
-  { key: 'emails', label: 'Email Flows', href: '/dashboard/emails', icon: IconMail, sparkle: true },
-  { key: 'autodm', label: 'AutoDM', href: '/dashboard/autodm', icon: IconSend, accent: true, sparkle: true },
+  { key: 'emails', label: 'Email Flows', href: '/dashboard/emails', icon: IconMail, sparkle: true, requiredFeature: 'email' },
+  { key: 'autodm', label: 'AutoDM', href: '/dashboard/autodm', icon: IconSend, accent: true, sparkle: true, requiredFeature: 'autodm' },
+  { key: 'media', label: 'Media', href: '/dashboard/media', icon: IconImage, sparkle: true },
 ];
 
 const SECONDARY_NAV: NavItem[] = [
   { key: 'settings', label: 'Settings', href: '/dashboard/settings', icon: IconSettings },
 ];
 
-function NavLink({ item, active, onNavigate }: { item: NavItem; active: boolean; onNavigate?: () => void }) {
+function NavLink({ item, active, onNavigate, locked }: { item: NavItem; active: boolean; onNavigate?: () => void; locked?: boolean }) {
   const Icon = item.icon;
+  if (locked) {
+    return (
+      <Link
+        href="/dashboard/settings?tab=billing"
+        onClick={onNavigate}
+        title={`Upgrade your plan to unlock ${item.label}`}
+        className="group flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-[15px] font-medium text-neutral-400 ring-1 ring-inset ring-transparent transition-all duration-150 hover:bg-[#6355ff]/[0.06]"
+      >
+        <span className="text-neutral-400"><Icon size={24} /></span>
+        <span className="truncate">{item.label}</span>
+        <IconLock size={14} className="ml-auto shrink-0 text-neutral-400" />
+      </Link>
+    );
+  }
   if (item.soon) {
     return (
       <span className="flex cursor-default items-center gap-3 rounded-lg px-3 py-2 text-sm text-neutral-400">
@@ -109,12 +134,14 @@ function SidebarContent({
   pathname,
   onNavigate,
   onLogout,
+  features,
 }: {
   profile: CreatorProfile | null;
   email?: string;
   pathname: string;
   onNavigate?: () => void;
   onLogout: () => void;
+  features?: PlanFeatureFlags | null;
 }) {
   const isActive = (item: NavItem) =>
     item.href === '/dashboard' ? pathname === '/dashboard' : pathname.startsWith(item.href);
@@ -146,7 +173,13 @@ function SidebarContent({
 
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-3">
         {visibleNav.map((item) => (
-          <NavLink key={item.key} item={item} active={isActive(item)} onNavigate={onNavigate} />
+          <NavLink
+            key={item.key}
+            item={item}
+            active={isActive(item)}
+            onNavigate={onNavigate}
+            locked={Boolean(item.requiredFeature && features && !features[item.requiredFeature])}
+          />
         ))}
         <NavLink
           item={{ key: 'more', label: 'More', href: '/dashboard/more', icon: IconPlus }}
@@ -263,6 +296,7 @@ function ShellInner({
   const router = useRouter();
   const pathname = usePathname();
   const [profile, setProfile] = useState<CreatorProfile | null>(null);
+  const [features, setFeatures] = useState<PlanFeatureFlags | null>(null);
   const [ready, setReady] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -283,7 +317,16 @@ function ShellInner({
 
   useEffect(() => {
     void load();
-  }, [load]);
+    // Plan features drive the sidebar locks; refetch on mount and whenever the
+    // plan changes (e.g. after upgrading/downgrading on the Billing page).
+    const loadFeatures = () =>
+      authedRequest<{ subscription: { features: PlanFeatureFlags } }>('/api/subscription')
+        .then((r) => setFeatures(r.subscription.features))
+        .catch(() => setFeatures(null));
+    void loadFeatures();
+    window.addEventListener(PLAN_CHANGED_EVENT, loadFeatures);
+    return () => window.removeEventListener(PLAN_CHANGED_EVENT, loadFeatures);
+  }, [load, authedRequest]);
 
   const onLogout = useCallback(async () => {
     await logout();
@@ -296,7 +339,7 @@ function ShellInner({
     <div className="min-h-screen bg-surface-subtle">
       {/* Desktop sidebar — light lavender tint to match Stan v2 */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-[184px] bg-[#eeeefb] lg:block">
-        <SidebarContent profile={profile} email={user?.email} pathname={pathname} onLogout={onLogout} />
+        <SidebarContent profile={profile} email={user?.email} pathname={pathname} onLogout={onLogout} features={features} />
       </aside>
 
       {/* Mobile drawer */}
@@ -316,6 +359,7 @@ function ShellInner({
               pathname={pathname}
               onNavigate={() => setMobileOpen(false)}
               onLogout={onLogout}
+              features={features}
             />
           </div>
         </div>

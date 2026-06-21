@@ -154,7 +154,7 @@ function PayoutPanel({ summary }: { summary: { revenueCents: number; orders: num
 /* Filters                                                             */
 /* ------------------------------------------------------------------ */
 
-type FilterKey = 'date' | 'email' | 'product' | 'amount' | 'discount' | 'payment' | 'status';
+type FilterKey = 'date' | 'email' | 'product' | 'amount' | 'discount' | 'payment' | 'status' | 'fulfilment';
 const FILTER_CHIPS: { value: FilterKey; label: string }[] = [
   { value: 'date', label: 'Date & Time' },
   { value: 'email', label: 'Email' },
@@ -163,19 +163,22 @@ const FILTER_CHIPS: { value: FilterKey; label: string }[] = [
   { value: 'discount', label: 'Discount Code' },
   { value: 'payment', label: 'Payment Method' },
   { value: 'status', label: 'Status' },
+  { value: 'fulfilment', label: 'Fulfilment' },
 ];
 
 interface FilterState {
   email: string;
   product: string;
   status: string;
+  fulfilment: string;
   minAmount: string;
+  maxAmount: string;
   from: string;
   to: string;
   discount: string;
   payment: string;
 }
-const EMPTY_FILTERS: FilterState = { email: '', product: '', status: '', minAmount: '', from: '', to: '', discount: '', payment: '' };
+const EMPTY_FILTERS: FilterState = { email: '', product: '', status: '', fulfilment: '', minAmount: '', maxAmount: '', from: '', to: '', discount: '', payment: '' };
 
 function toCsv(orders: Order[]): string {
   const head = ['Date', 'Email', 'Product', 'Amount', 'Status', 'Fulfilment', 'Discount Code', 'Payment Method'];
@@ -234,28 +237,52 @@ function IncomeContent({ initialOrders }: { initialOrders?: Order[] }) {
   useEffect(() => { if (initialOrders) return; void load(); }, [load, initialOrders]);
 
   const productOptions = useMemo(
-    () => Array.from(new Set((orders ?? []).map((o) => o.product?.title).filter(Boolean) as string[])),
+    () => Array.from(new Set((orders ?? []).map((o) => o.product?.title).filter(Boolean) as string[])).sort(),
     [orders],
   );
-  const statusOptions = useMemo(() => Array.from(new Set((orders ?? []).map((o) => o.status))), [orders]);
+  const statusOptions = useMemo(() => Array.from(new Set((orders ?? []).map((o) => o.status))).sort(), [orders]);
+  const fulfilmentOptions = useMemo(
+    () => Array.from(new Set((orders ?? []).map((o) => o.fulfilmentStatus).filter(Boolean))).sort(),
+    [orders],
+  );
 
   const filtered = useMemo(() => {
     if (!orders) return [];
+    // Local-day boundaries so the From/To dates are inclusive and timezone-safe.
+    const fromMs = active.includes('date') && filters.from ? new Date(`${filters.from}T00:00:00`).getTime() : null;
+    const toMs = active.includes('date') && filters.to ? new Date(`${filters.to}T23:59:59.999`).getTime() : null;
+    const minCents = active.includes('amount') && filters.minAmount.trim() !== '' ? Math.round(parseFloat(filters.minAmount) * 100) : null;
+    const maxCents = active.includes('amount') && filters.maxAmount.trim() !== '' ? Math.round(parseFloat(filters.maxAmount) * 100) : null;
+
     return orders.filter((o) => {
+      const created = new Date(o.createdAt).getTime();
       if (active.includes('email') && filters.email && !o.buyerEmail.toLowerCase().includes(filters.email.toLowerCase())) return false;
       if (active.includes('product') && filters.product && o.product?.title !== filters.product) return false;
       if (active.includes('status') && filters.status && o.status !== filters.status) return false;
-      if (active.includes('amount') && filters.minAmount && o.amountCents < Math.round(parseFloat(filters.minAmount) * 100)) return false;
-      if (active.includes('date') && filters.from && new Date(o.createdAt) < new Date(filters.from)) return false;
-      if (active.includes('date') && filters.to && new Date(o.createdAt) > new Date(filters.to + 'T23:59:59')) return false;
+      if (active.includes('fulfilment') && filters.fulfilment && o.fulfilmentStatus !== filters.fulfilment) return false;
+      if (minCents !== null && !Number.isNaN(minCents) && o.amountCents < minCents) return false;
+      if (maxCents !== null && !Number.isNaN(maxCents) && o.amountCents > maxCents) return false;
+      if (fromMs !== null && created < fromMs) return false;
+      if (toMs !== null && created > toMs) return false;
       if (active.includes('discount') && filters.discount && !(o.discountCode ?? '').toLowerCase().includes(filters.discount.toLowerCase())) return false;
       if (active.includes('payment') && filters.payment && paymentOf(o) !== filters.payment) return false;
       return true;
     });
   }, [orders, active, filters]);
 
+  // Total of paid orders in the current filtered view (so the figure tracks filters).
+  const filteredRevenueCents = useMemo(
+    () => filtered.reduce((sum, o) => (o.status === 'paid' ? sum + o.amountCents : sum), 0),
+    [filtered],
+  );
+
   function toggleChip(k: FilterKey) {
     setActive((prev) => (prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k]));
+  }
+
+  function clearFilters() {
+    setActive([]);
+    setFilters(EMPTY_FILTERS);
   }
 
   function download() {
@@ -339,11 +366,20 @@ function IncomeContent({ initialOrders }: { initialOrders?: Order[] }) {
             {active.includes('status') && (
               <Select label="Status" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
                 <option value="">Any status</option>
-                {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+                {statusOptions.map((s) => <option key={s} value={s} className="capitalize">{s}</option>)}
+              </Select>
+            )}
+            {active.includes('fulfilment') && (
+              <Select label="Fulfilment" value={filters.fulfilment} onChange={(e) => setFilters({ ...filters, fulfilment: e.target.value })}>
+                <option value="">Any fulfilment</option>
+                {fulfilmentOptions.map((s) => <option key={s} value={s} className="capitalize">{s}</option>)}
               </Select>
             )}
             {active.includes('amount') && (
               <Field label="Min amount ($)" type="number" min="0" value={filters.minAmount} onChange={(e) => setFilters({ ...filters, minAmount: e.target.value })} placeholder="0" />
+            )}
+            {active.includes('amount') && (
+              <Field label="Max amount ($)" type="number" min="0" value={filters.maxAmount} onChange={(e) => setFilters({ ...filters, maxAmount: e.target.value })} placeholder="Any" />
             )}
             {active.includes('date') && (
               <>
@@ -364,8 +400,25 @@ function IncomeContent({ initialOrders }: { initialOrders?: Order[] }) {
           </div>
         )}
 
+        {/* Results summary */}
+        {orders !== null && (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm">
+            <span className="text-neutral-500">
+              Showing <span className="font-bold text-[#1a1c3a]">{filtered.length}</span>
+              {filtered.length !== orders.length && <> of {orders.length}</> } order{filtered.length === 1 ? '' : 's'}
+              <span className="mx-2 text-neutral-300">·</span>
+              <span className="font-bold text-emerald-600">{formatPrice(filteredRevenueCents)}</span> paid
+            </span>
+            {active.length > 0 && (
+              <button type="button" onClick={clearFilters} className="font-semibold text-brand-600 hover:text-brand-700">
+                Clear all filters
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Table */}
-        <div className="mt-6 overflow-x-auto">
+        <div className="mt-4 overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="text-left text-[15px] font-bold text-[#1a1c3a]">

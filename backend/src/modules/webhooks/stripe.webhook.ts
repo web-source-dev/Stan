@@ -6,6 +6,7 @@ import { stripe } from '../../lib/stripe';
 import { WebhookEventModel } from '../../models/WebhookEvent';
 import { fulfilCheckoutSession, markRefunded } from '../checkout/fulfilment.service';
 import { syncFromWebhook } from '../payments/connect.service';
+import { SubscriptionModel } from '../../models/Subscription';
 
 /**
  * Stripe webhook receiver. Mounted before the JSON parser with a raw body so
@@ -69,6 +70,16 @@ export async function processEvent(event: Stripe.Event): Promise<void> {
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session;
+      // Platform charge for an extra-storage pack (not a buyer commerce order):
+      // grant the storage to the purchasing creator and stop.
+      if (session.metadata?.itemType === 'storage_addon') {
+        const userId = session.metadata.userId;
+        const packBytes = Number(session.metadata.packBytes) || 0;
+        if (userId && packBytes > 0) {
+          await SubscriptionModel.updateOne({ userId }, { $inc: { extraStorageBytes: packBytes } });
+        }
+        break;
+      }
       await fulfilCheckoutSession(session, event.account);
       break;
     }

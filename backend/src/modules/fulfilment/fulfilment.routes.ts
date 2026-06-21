@@ -3,71 +3,95 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { publicWriteLimiter } from '../../middleware/rateLimit';
-import { AppError } from '../../utils/AppError';
-import { EntitlementModel } from '../../models/Entitlement';
-import { ProductModel } from '../../models/Product';
-import { env } from '../../config/env';
-import { signedDeliveryUrl } from '../../lib/cloudinary';
+import {
+  getAccessMeta,
+  requestAccessCode,
+  verifyAccessCode,
+  getAccessFiles,
+  mintPreviewUrl,
+  mintDownloadUrl,
+} from './access.service';
 
 /**
- * Public buyer fulfilment access. The opaque accessToken (emailed to the buyer)
- * backs the download page — buyers are not authenticated accounts. The token
- * resolves to an entitlement; downloads return short-lived signed Cloudinary
- * URLs generated on demand, so links in the page can't be shared long-term.
+ * Email-gated buyer fulfilment access.
+ *
+ * The emailed accessToken identifies the purchase but is no longer enough to
+ * open it: the visitor must enter a one-time code sent to the buyer's email,
+ * which mints a short-lived buyer session. That session is required to list
+ * files and mint signed download URLs — so a forwarded/leaked link can't be
+ * opened by anyone other than the purchaser.
  */
 export const fulfilmentRouter = Router();
 
 const tokenParam = z.object({ token: z.string().min(20).max(200) });
+const emailBody = z.string().email().max(200);
 
-async function resolveEntitlement(token: string) {
-  const entitlement = await EntitlementModel.findOne({ accessToken: token });
-  if (!entitlement || entitlement.revokedAt) throw AppError.notFound('Access not found or revoked');
-  const product = await ProductModel.findById(entitlement.productId);
-  if (!product) throw AppError.notFound('Product no longer available');
-  return { entitlement, product };
-}
-
-// Fulfilment page data: product info + file list (no direct URLs yet).
+// Pre-verification: product summary + a masked email hint. No files, no URLs.
 fulfilmentRouter.get(
   '/:token',
   validate({ params: tokenParam }),
   asyncHandler(async (req, res) => {
-    const { entitlement, product } = await resolveEntitlement(String(req.params.token));
-    entitlement.lastAccessedAt = new Date();
-    await entitlement.save();
-    res.json({
-      product: {
-        title: product.title,
-        shortDescription: product.shortDescription,
-        thankYouMessage: product.thankYouMessage,
-        coverImageUrl: product.coverImageUrl,
-      },
-      files: product.assets.map((a) => ({
-        id: String(a._id),
-        filename: a.filename,
-        bytes: a.bytes,
-      })),
-    });
+    res.json(await getAccessMeta(String(req.params.token)));
   }),
 );
 
-// Mint a short-lived signed download URL for one file, then redirect to it.
+// Email a one-time access code (only actually sent if the email matches).
+fulfilmentRouter.post(
+  '/:token/request-code',
+  publicWriteLimiter,
+  validate({ params: tokenParam, body: z.object({ email: emailBody }) }),
+  asyncHandler(async (req, res) => {
+    const { email } = req.body as { email: string };
+    res.json(await requestAccessCode(String(req.params.token), email));
+  }),
+);
+
+// Verify the code → buyer session + product + file list.
+fulfilmentRouter.post(
+  '/:token/verify',
+  publicWriteLimiter,
+  validate({ params: tokenParam, body: z.object({ email: emailBody, code: z.string().min(4).max(10) }) }),
+  asyncHandler(async (req, res) => {
+    const { email, code } = req.body as { email: string; code: string };
+    res.json(await verifyAccessCode(String(req.params.token), email, code));
+  }),
+);
+
+// Returning buyer with a valid session: re-list files (Authorization: Bearer).
 fulfilmentRouter.get(
+  '/:token/files',
+  validate({ params: tokenParam }),
+  asyncHandler(async (req, res) => {
+    res.json(await getAccessFiles(String(req.params.token), req.headers.authorization));
+  }),
+);
+
+// Mint a short-lived signed URL to PREVIEW one file inline (always allowed).
+fulfilmentRouter.post(
+  '/:token/preview/:fileId',
+  publicWriteLimiter,
+  validate({ params: tokenParam.extend({ fileId: z.string().regex(/^[a-f0-9]{24}$/) }) }),
+  asyncHandler(async (req, res) => {
+    const { url } = await mintPreviewUrl(
+      String(req.params.token),
+      req.headers.authorization,
+      String(req.params.fileId),
+    );
+    res.json({ url });
+  }),
+);
+
+// Mint a short-lived signed download URL — only if the creator enabled downloads.
+fulfilmentRouter.post(
   '/:token/download/:fileId',
   publicWriteLimiter,
   validate({ params: tokenParam.extend({ fileId: z.string().regex(/^[a-f0-9]{24}$/) }) }),
   asyncHandler(async (req, res) => {
-    if (!env.cloudinaryConfigured) {
-      throw new AppError(503, 'cloudinary_unconfigured', 'Downloads are not configured');
-    }
-    const { entitlement, product } = await resolveEntitlement(String(req.params.token));
-    const asset = product.assets.find((a) => String(a._id) === req.params.fileId);
-    if (!asset) throw AppError.notFound('File not found');
-
-    const url = signedDeliveryUrl(asset.publicId, asset.resourceType, 300);
-    entitlement.downloadCount += 1;
-    entitlement.lastAccessedAt = new Date();
-    await entitlement.save();
-    res.redirect(302, url);
+    const { url } = await mintDownloadUrl(
+      String(req.params.token),
+      req.headers.authorization,
+      String(req.params.fileId),
+    );
+    res.json({ url });
   }),
 );

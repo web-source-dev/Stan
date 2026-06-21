@@ -18,7 +18,7 @@ export function verifyInstagramWebhook(req: Request, res: Response): void {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-  if (mode === 'subscribe' && token && token === env.META_WEBHOOK_VERIFY_TOKEN) {
+  if (mode === 'subscribe' && token && token === env.INSTAGRAM_WEBHOOK_VERIFY_TOKEN) {
     res.status(200).send(String(challenge));
     return;
   }
@@ -31,6 +31,7 @@ interface IgChange {
     text?: string;
     from?: { id?: string };
     id?: string; // comment id
+    media?: { id?: string }; // the post the comment was left on
   };
 }
 interface IgMessaging {
@@ -43,15 +44,22 @@ interface IgEntry {
   messaging?: IgMessaging[];
 }
 
+interface ExtractedEvent {
+  source: AutoReplySource;
+  text: string;
+  targetId?: string;
+  mediaId?: string;
+}
+
 /** Normalise a single entry into the fields the engine needs. */
-function extractEvents(entry: IgEntry): { source: AutoReplySource; text: string; targetId?: string }[] {
-  const out: { source: AutoReplySource; text: string; targetId?: string }[] = [];
+function extractEvents(entry: IgEntry): ExtractedEvent[] {
+  const out: ExtractedEvent[] = [];
   for (const m of entry.messaging ?? []) {
     if (m.message?.text) out.push({ source: 'dm', text: m.message.text, targetId: m.sender?.id });
   }
   for (const c of entry.changes ?? []) {
     if (c.field === 'comments' && c.value?.text) {
-      out.push({ source: 'comment', text: c.value.text, targetId: c.value.id });
+      out.push({ source: 'comment', text: c.value.text, targetId: c.value.id, mediaId: c.value.media?.id });
     }
   }
   return out;

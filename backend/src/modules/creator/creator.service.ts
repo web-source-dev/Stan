@@ -2,6 +2,7 @@ import { AppError } from '../../utils/AppError';
 import { UserModel } from '../../models/User';
 import { CreatorProfileModel, type CreatorProfileDoc } from '../../models/CreatorProfile';
 import { StorefrontConfigModel } from '../../models/StorefrontConfig';
+import { SubscriptionModel, PLAN_FEATURES, effectiveTier } from '../../models/Subscription';
 import { RESERVED_USERNAMES } from './creator.validators';
 import { recordAudit } from '../../lib/audit';
 import { listPublicProducts } from '../products/products.service';
@@ -202,6 +203,10 @@ export async function getPublicStorefront(username: string) {
   const products = await listPublicProducts(String(profile.userId));
   const courses = await listPublicCourses(String(profile.userId));
   const bookingTypes = await listPublicBookingTypes(String(profile.userId));
+  // "Powered by Stan" branding is shown on Free stores and removed on paid plans.
+  const sub = await SubscriptionModel.findOne({ userId: profile.userId });
+  const tier = sub ? effectiveTier(sub) : 'free';
+  const showBranding = !PLAN_FEATURES[tier].removeBranding;
   return {
     profile: storefrontProfile(profile),
     theme: config?.theme ?? null,
@@ -210,5 +215,6 @@ export async function getPublicStorefront(username: string) {
     products,
     courses,
     bookingTypes,
+    showBranding,
   };
 }

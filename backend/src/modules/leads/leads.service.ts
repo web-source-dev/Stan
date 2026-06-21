@@ -2,6 +2,11 @@ import { Types } from 'mongoose';
 import { AppError } from '../../utils/AppError';
 import { LeadModel, type LeadDoc } from '../../models/Lead';
 import { OrderModel } from '../../models/Order';
+import { EntitlementModel } from '../../models/Entitlement';
+import { EnrollmentModel } from '../../models/Enrollment';
+import { BookingModel, BookingTypeModel } from '../../models/Booking';
+import { ProductModel } from '../../models/Product';
+import { CourseModel, CourseLessonModel } from '../../models/Course';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { recordAudit } from '../../lib/audit';
 import { triggerFlows } from '../flows/flows.service';
@@ -216,4 +221,145 @@ export async function leadStats(creatorId: string) {
     LeadModel.countDocuments({ creatorId, unsubscribedAt: { $exists: false } }),
   ]);
   return { total, customers, subscribers };
+}
+
+const MONTH_KEY = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+
+/** Last-12-months paid-spend timeline for the customer detail mini chart. */
+function buildMonthlySpend(paid: { amountCents: number; when: Date }[]) {
+  const now = new Date();
+  const buckets = new Map<string, { spentCents: number; orders: number }>();
+  const keys: string[] = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const k = MONTH_KEY(d);
+    keys.push(k);
+    buckets.set(k, { spentCents: 0, orders: 0 });
+  }
+  for (const o of paid) {
+    const b = buckets.get(MONTH_KEY(o.when));
+    if (b) { b.spentCents += o.amountCents; b.orders += 1; }
+  }
+  return keys.map((k) => ({ month: k, ...buckets.get(k)! }));
+}
+
+/**
+ * Full per-customer profile + commerce analytics for one contact: orders,
+ * lifetime spend, owned products/courses, bookings, and a 12-month spend
+ * timeline. Keyed by the contact's lead id but aggregated by their email.
+ */
+export async function getCustomerDetail(creatorId: string, leadId: string) {
+  const lead = await LeadModel.findOne({ _id: leadId, creatorId });
+  if (!lead) throw AppError.notFound('Customer not found');
+  const email = lead.email.toLowerCase();
+
+  const [orders, entitlements, enrollments, bookings] = await Promise.all([
+    OrderModel.find({ creatorId, buyerEmail: email }).sort({ createdAt: -1 }),
+    EntitlementModel.find({ creatorId, buyerEmail: email }).sort({ createdAt: -1 }),
+    EnrollmentModel.find({ creatorId, buyerEmail: email }).sort({ createdAt: -1 }),
+    BookingModel.find({ creatorId, buyerEmail: email }).sort({ startAt: -1 }),
+  ]);
+
+  // Resolve referenced product / course / booking-type titles in bulk.
+  const productIds = [...new Set([...orders.map((o) => String(o.productId)), ...entitlements.map((e) => String(e.productId))])];
+  const courseIds = [...new Set(enrollments.map((e) => String(e.courseId)))];
+  const btIds = [...new Set(bookings.map((b) => String(b.bookingTypeId)))];
+  const [products, courses, bts] = await Promise.all([
+    ProductModel.find({ _id: { $in: productIds } }),
+    CourseModel.find({ _id: { $in: courseIds } }),
+    BookingTypeModel.find({ _id: { $in: btIds } }),
+  ]);
+  const productMap = new Map(products.map((p) => [p.id, p]));
+  const courseMap = new Map(courses.map((c) => [c.id, c]));
+  const btTitle = new Map(bts.map((bt) => [bt.id, bt.title]));
+  const lessonCounts = new Map<string, number>();
+  await Promise.all(
+    courses.map(async (c) => lessonCounts.set(c.id, await CourseLessonModel.countDocuments({ courseId: c.id }))),
+  );
+
+  const paid = orders.filter((o) => o.status === 'paid');
+  const refunded = orders.filter((o) => o.status === 'refunded');
+  const spentCents = paid.reduce((s, o) => s + o.amountCents, 0);
+  const refundedCents = refunded.reduce((s, o) => s + o.amountCents, 0);
+  const paidWhen = paid
+    .map((o) => (o.paidAt ?? (o.get('createdAt') as Date)))
+    .sort((a, b) => a.getTime() - b.getTime());
+
+  return {
+    contact: {
+      id: lead.id,
+      email,
+      firstName: lead.firstName,
+      lastName: lead.get('lastName') ?? '',
+      phone: lead.get('phone') ?? '',
+      source: lead.source,
+      tags: lead.tags,
+      isCustomer: lead.isCustomer,
+      unsubscribed: Boolean(lead.unsubscribedAt),
+      consent: lead.consent,
+      optInStatus: lead.optInStatus,
+      utm: { source: lead.utm?.source ?? '', medium: lead.utm?.medium ?? '', campaign: lead.utm?.campaign ?? '' },
+      createdAt: lead.get('createdAt'),
+    },
+    summary: {
+      paidOrders: paid.length,
+      totalOrders: orders.length,
+      spentCents,
+      refundedCents,
+      netCents: spentCents - refundedCents,
+      aovCents: paid.length ? Math.round(spentCents / paid.length) : 0,
+      firstPurchaseAt: paidWhen[0] ?? null,
+      lastPurchaseAt: paidWhen[paidWhen.length - 1] ?? null,
+      currency: paid[0]?.currency ?? 'usd',
+      productsOwned: entitlements.filter((e) => !e.revokedAt).length,
+      coursesOwned: enrollments.filter((e) => !e.revokedAt).length,
+      bookings: bookings.length,
+    },
+    orders: orders.map((o) => ({
+      id: o.id,
+      productTitle: productMap.get(String(o.productId))?.title ?? 'Product',
+      amountCents: o.amountCents,
+      currency: o.currency,
+      status: o.status,
+      fulfilmentStatus: o.get('fulfilmentStatus'),
+      source: o.source ?? '',
+      discountCode: o.get('discountCode') ?? '',
+      createdAt: o.get('createdAt'),
+      paidAt: o.paidAt ?? null,
+      refundedAt: o.refundedAt ?? null,
+    })),
+    products: entitlements.map((e) => {
+      const p = productMap.get(String(e.productId));
+      return {
+        id: e.id,
+        title: p?.title ?? 'Product',
+        coverImageUrl: p?.coverImageUrl ?? '',
+        downloadCount: e.downloadCount,
+        lastAccessedAt: e.lastAccessedAt ?? null,
+        grantedAt: e.get('grantedAt') ?? e.get('createdAt'),
+        revoked: Boolean(e.revokedAt),
+      };
+    }),
+    courses: enrollments.map((e) => {
+      const c = courseMap.get(String(e.courseId));
+      return {
+        id: e.id,
+        title: c?.title ?? 'Course',
+        coverImageUrl: c?.coverImageUrl ?? '',
+        completed: e.completedLessonIds.length,
+        total: lessonCounts.get(String(e.courseId)) ?? 0,
+        revoked: Boolean(e.revokedAt),
+      };
+    }),
+    bookings: bookings.map((b) => ({
+      id: b.id,
+      title: btTitle.get(String(b.bookingTypeId)) ?? 'Session',
+      startAt: b.startAt,
+      timezone: b.get('timezone') || 'UTC',
+      status: b.status,
+      meetingUrl: b.get('meetingUrl') || '',
+      upcoming: b.startAt.getTime() > Date.now(),
+    })),
+    monthly: buildMonthlySpend(paid.map((o) => ({ amountCents: o.amountCents, when: o.paidAt ?? (o.get('createdAt') as Date) }))),
+  };
 }

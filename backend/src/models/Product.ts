@@ -98,6 +98,8 @@ const productSchema = new Schema(
     /** For community/membership: external access link (Discord, Circle, etc.). */
     accessUrl: { type: String, maxlength: 1000, default: '' },
     deliveryMode: { type: String, enum: ['file', 'url'], default: 'file' },
+    /** When false, buyers can only PREVIEW fulfilment files (no download). */
+    allowDownload: { type: Boolean, default: false },
     redirectUrl: { type: String, maxlength: 1000, default: '' },
     confirmSubject: { type: String, maxlength: 200, default: '' },
     confirmBody: { type: String, maxlength: 5000, default: '' },

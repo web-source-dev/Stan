@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
 import { ApiException } from '@/lib/api';
 import { DashboardShell } from '@/components/DashboardShell';
+import { FeatureGate } from '@/components/FeatureGate';
 import { Alert, Badge, Skeleton } from '@/components/ui';
 import { IconMail, IconUsers, IconPlus, IconTrash, IconPencil } from '@/components/icons';
 import { cn } from '@/lib/cn';
@@ -384,7 +385,9 @@ function EmailsView() {
 export default function EmailsPage() {
   return (
     <DashboardShell title="My Email Flows" maxWidth="max-w-[1280px]" hideTitle hideSubtitle>
-      <EmailsView />
+      <FeatureGate feature="email" name="Email Flows" tier="Pro">
+        <EmailsView />
+      </FeatureGate>
     </DashboardShell>
   );
 }

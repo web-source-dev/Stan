@@ -4,13 +4,31 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
 import { env } from '../../config/env';
+import { AppError } from '../../utils/AppError';
 import { recordAudit } from '../../lib/audit';
+import { getEntitlements } from '../subscription/subscription.guard';
 import { IntegrationModel, INTEGRATION_PROVIDERS, type IntegrationDoc, type IntegrationProvider } from '../../models/Integration';
 import { buildLoginUrl } from './instagram.service';
 
 // Mounted at /api/integrations.
 export const integrationsRouter = Router();
 integrationsRouter.use(requireAuth);
+
+/**
+ * Connecting Instagram is only useful for AutoDM, so gate its connect/confirm/
+ * disconnect actions on the autodm feature (Premium). Other providers pass.
+ */
+const gateInstagram = asyncHandler(async (req, _res, next) => {
+  if (req.params.provider === 'instagram') {
+    const { features } = await getEntitlements(req.user!.id);
+    if (!features.autodm) {
+      throw new AppError(403, 'upgrade_required', 'Instagram / AutoDM is a Premium feature. Upgrade to connect it.', {
+        feature: 'autodm',
+      });
+    }
+  }
+  next();
+});
 
 const META = {
   instagram: { label: 'Instagram' },
@@ -48,15 +66,16 @@ integrationsRouter.get(
 integrationsRouter.post(
   '/:provider/connect',
   validate({ params: providerParam }),
+  gateInstagram,
   asyncHandler(async (req, res) => {
     const provider = req.params.provider as IntegrationProvider;
     const creatorId = req.user!.id;
     let doc = await IntegrationModel.findOne({ creatorId, provider });
     if (!doc) doc = await IntegrationModel.create({ creatorId, provider, status: 'pending' });
     else { doc.status = 'pending'; await doc.save(); }
-    // When real Meta credentials are configured, send the creator through the
-    // genuine Facebook OAuth consent dialog; otherwise fall back to the in-app
-    // authorize screen that completes the demo handshake.
+    // When real Instagram credentials are configured, send the creator through
+    // the genuine Instagram OAuth consent dialog; otherwise fall back to the
+    // in-app authorize screen that completes the demo handshake.
     const authorizeUrl =
       provider === 'instagram' && env.instagramConfigured
         ? buildLoginUrl(creatorId)
@@ -69,6 +88,7 @@ integrationsRouter.post(
 integrationsRouter.post(
   '/:provider/confirm',
   validate({ params: providerParam, body: z.object({ accountName: z.string().max(120).optional() }) }),
+  gateInstagram,
   asyncHandler(async (req, res) => {
     const provider = req.params.provider as IntegrationProvider;
     const creatorId = req.user!.id;
@@ -86,6 +106,7 @@ integrationsRouter.post(
 integrationsRouter.post(
   '/:provider/disconnect',
   validate({ params: providerParam }),
+  gateInstagram,
   asyncHandler(async (req, res) => {
     const provider = req.params.provider as IntegrationProvider;
     const creatorId = req.user!.id;

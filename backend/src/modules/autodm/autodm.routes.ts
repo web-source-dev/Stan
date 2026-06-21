@@ -3,13 +3,15 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
+import { requireFeature } from '../subscription/subscription.guard';
 import { AutoDMRuleModel, type AutoDMRuleDoc } from '../../models/AutoDMRule';
 import { AppError } from '../../utils/AppError';
-import { runAutoReply } from '../integrations/instagram.service';
+import { runAutoReply, fetchAccountMedia } from '../integrations/instagram.service';
 
 // Mounted at /api/autodm.
 export const autodmRouter = Router();
 autodmRouter.use(requireAuth);
+autodmRouter.use(requireFeature('autodm'));
 
 function publicRule(r: AutoDMRuleDoc) {
   return {
@@ -20,6 +22,12 @@ function publicRule(r: AutoDMRuleDoc) {
     linkUrl: r.linkUrl,
     enabled: r.enabled,
     triggeredCount: r.triggeredCount,
+    mediaId: r.mediaId,
+    mediaPermalink: r.mediaPermalink,
+    mediaThumbnail: r.mediaThumbnail,
+    mediaCaption: r.mediaCaption,
+    dmOnComment: r.dmOnComment,
+    publicReply: r.publicReply,
     createdAt: r.get('createdAt'),
   };
 }
@@ -30,6 +38,13 @@ const ruleSchema = z.object({
   reply: z.string().min(1).max(1000),
   linkUrl: z.string().url().optional().or(z.literal('')),
   enabled: z.boolean().optional(),
+  // Comment-automation: optionally scope to one post + comment→DM behaviour.
+  mediaId: z.string().max(64).optional().or(z.literal('')),
+  mediaPermalink: z.string().max(500).optional().or(z.literal('')),
+  mediaThumbnail: z.string().max(1000).optional().or(z.literal('')),
+  mediaCaption: z.string().max(2200).optional().or(z.literal('')),
+  dmOnComment: z.boolean().optional(),
+  publicReply: z.string().max(1000).optional().or(z.literal('')),
 });
 
 autodmRouter.get(
@@ -46,6 +61,16 @@ autodmRouter.post(
   asyncHandler(async (req, res) => {
     const rule = await AutoDMRuleModel.create({ creatorId: req.user!.id, ...req.body });
     res.status(201).json({ rule: publicRule(rule) });
+  }),
+);
+
+// Recent posts from the connected Instagram account, for scoping a comment rule
+// to a specific post. Returns [] when not connected so the UI degrades cleanly.
+autodmRouter.get(
+  '/instagram/media',
+  asyncHandler(async (req, res) => {
+    const media = await fetchAccountMedia(req.user!.id);
+    res.json({ media });
   }),
 );
 

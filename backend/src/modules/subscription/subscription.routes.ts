@@ -3,9 +3,22 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
-import { SubscriptionModel, PLAN_PRICES, type SubscriptionDoc } from '../../models/Subscription';
+import {
+  SubscriptionModel,
+  PLANS,
+  PLAN_FEATURES,
+  STORAGE_PACKS,
+  storageQuotaBytes,
+  normalizePlan,
+  effectiveTier,
+  type PlanKey,
+  type StoragePackKey,
+  type SubscriptionDoc,
+} from '../../models/Subscription';
 import { UserModel } from '../../models/User';
 import { ReferralModel } from '../../models/Referral';
+import { env } from '../../config/env';
+import { requireStripe } from '../../lib/stripe';
 
 // Mounted at /api/subscription.
 export const subscriptionRouter = Router();
@@ -13,9 +26,7 @@ subscriptionRouter.use(requireAuth);
 
 /**
  * Credit the referrer a lifetime commission when a referred creator pays for a
- * plan. Best-effort: never blocks the subscription change. Guarded by the caller
- * so it only fires on a genuine transition into a paid active plan (not on every
- * plan toggle), preventing double-counting.
+ * plan. Best-effort: never blocks the subscription change.
  */
 async function accrueReferralCommission(userId: string, planCents: number): Promise<void> {
   if (planCents <= 0) return;
@@ -32,24 +43,48 @@ async function accrueReferralCommission(userId: string, planCents: number): Prom
 }
 
 function publicSub(s: SubscriptionDoc) {
-  const price = PLAN_PRICES[s.plan];
+  const planKey = normalizePlan(s.plan);
+  const plan = PLANS[planKey];
+  const tier = effectiveTier(s);
+  const features = PLAN_FEATURES[tier];
+  const extraStorageBytes = s.extraStorageBytes ?? 0;
+  const quota = storageQuotaBytes(features, extraStorageBytes);
   return {
-    plan: s.plan,
+    plan: planKey,
+    tier, // the tier whose features currently apply (free if trial lapsed)
+    nominalTier: plan.tier, // the tier they've selected (even if trial lapsed)
     status: s.status,
-    label: price?.label ?? 'Creator',
-    priceCents: price?.cents ?? 0,
-    interval: price?.interval ?? 'month',
+    label: plan.label,
+    priceCents: plan.cents,
+    interval: plan.interval,
     stanleyAddon: s.stanleyAddon,
     trialEndsAt: s.trialEndsAt,
     currentPeriodEnd: s.currentPeriodEnd,
+    features,
+    storage: {
+      baseBytes: features.maxStorageBytes,
+      extraBytes: extraStorageBytes,
+      quotaBytes: quota === Infinity ? null : quota,
+    },
   };
 }
+
+/** The plan catalogue the picker renders. */
+const PLAN_CATALOGUE = (['free', 'pro_monthly', 'pro_yearly', 'premium_monthly', 'premium_yearly'] as PlanKey[]).map(
+  (key) => ({ key, ...PLANS[key], features: PLAN_FEATURES[PLANS[key].tier] }),
+);
+
+/** The storage add-on catalogue the "buy more storage" UI renders. */
+const STORAGE_PACK_CATALOGUE = (Object.keys(STORAGE_PACKS) as StoragePackKey[]).map((key) => ({
+  key,
+  ...STORAGE_PACKS[key],
+}));
 
 async function getOrCreate(userId: string): Promise<SubscriptionDoc> {
   let sub = await SubscriptionModel.findOne({ userId });
   if (!sub) {
     const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
-    sub = await SubscriptionModel.create({ userId, plan: 'monthly', status: 'trialing', trialEndsAt });
+    sub = await SubscriptionModel.create({ userId, plan: 'pro_monthly', status: 'trialing', trialEndsAt });
   }
   return sub;
 }
@@ -57,33 +92,85 @@ async function getOrCreate(userId: string): Promise<SubscriptionDoc> {
 subscriptionRouter.get(
   '/',
   asyncHandler(async (req, res) => {
-    res.json({ subscription: publicSub(await getOrCreate(req.user!.id)) });
+    res.json({
+      subscription: publicSub(await getOrCreate(req.user!.id)),
+      plans: PLAN_CATALOGUE,
+      storagePacks: STORAGE_PACK_CATALOGUE,
+    });
+  }),
+);
+
+/**
+ * Buy a one-time extra-storage pack. In demo mode (no Stripe) the storage is
+ * granted immediately; with Stripe configured this returns a platform Checkout
+ * URL and the grant happens on the `checkout.session.completed` webhook.
+ */
+subscriptionRouter.post(
+  '/storage/purchase',
+  validate({ body: z.object({ pack: z.enum(['gb5', 'gb20', 'gb80']) }) }),
+  asyncHandler(async (req, res) => {
+    const pack = STORAGE_PACKS[req.body.pack as StoragePackKey];
+    const sub = await getOrCreate(req.user!.id);
+
+    if (env.demoCheckout) {
+      sub.extraStorageBytes = (sub.extraStorageBytes ?? 0) + pack.bytes;
+      await sub.save();
+      return res.json({ demo: true, subscription: publicSub(sub) });
+    }
+
+    const stripe = requireStripe();
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      success_url: `${env.APP_URL}/dashboard/media?storage=success`,
+      cancel_url: `${env.APP_URL}/dashboard/media?storage=cancelled`,
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: 'usd',
+            unit_amount: pack.cents,
+            product_data: { name: `${pack.label} extra storage` },
+          },
+        },
+      ],
+      metadata: { itemType: 'storage_addon', userId: req.user!.id, packBytes: String(pack.bytes) },
+    });
+    res.json({ url: session.url, sessionId: session.id });
   }),
 );
 
 subscriptionRouter.post(
   '/select',
-  validate({ body: z.object({ plan: z.enum(['monthly', 'yearly', 'bundle']) }) }),
+  validate({
+    body: z.object({
+      plan: z.enum(['free', 'pro_monthly', 'pro_yearly', 'premium_monthly', 'premium_yearly']),
+    }),
+  }),
   asyncHandler(async (req, res) => {
     const sub = await getOrCreate(req.user!.id);
-    const wasActive = sub.status === 'active';
-    sub.plan = req.body.plan;
-    sub.stanleyAddon = req.body.plan === 'bundle';
-    // Selecting/switching a plan reactivates the subscription (unless still in a
-    // live trial) and resets the billing period to the new plan's interval —
-    // otherwise a previously-canceled sub would display as a priced active plan.
-    const inTrial = sub.status === 'trialing' && sub.trialEndsAt && sub.trialEndsAt.getTime() > Date.now();
-    if (!inTrial) {
+    const plan = req.body.plan as PlanKey;
+    const wasPaidActive = sub.status === 'active' && PLANS[normalizePlan(sub.plan)].tier !== 'free';
+    sub.plan = plan;
+    sub.stanleyAddon = PLANS[plan].tier === 'premium';
+
+    if (plan === 'free') {
+      // Downgrade: free tier, no trial, no billing period.
       sub.status = 'active';
-      const months = PLAN_PRICES[sub.plan]?.interval === 'year' ? 12 : 1;
+      sub.trialEndsAt = undefined;
+      sub.currentPeriodEnd = undefined;
+    } else {
+      // Selecting a paid plan activates it immediately (demo: no real card) and
+      // resets the billing period to the plan's interval.
+      sub.status = 'active';
+      const months = PLANS[plan].interval === 'year' ? 12 : 1;
       sub.currentPeriodEnd = new Date(Date.now() + months * 30 * 24 * 60 * 60 * 1000);
     }
     await sub.save();
-    // Accrue referral commission only on a genuine transition into a paid active
-    // plan (was not already active, and not still inside a free trial). Switching
-    // plans while already active does not re-accrue.
-    if (!inTrial && !wasActive) {
-      await accrueReferralCommission(req.user!.id, PLAN_PRICES[sub.plan]?.cents ?? 0);
+
+    // Accrue referral commission only on a genuine first transition into a paid
+    // active plan (not when already on a paid plan, and not for free).
+    if (plan !== 'free' && !wasPaidActive) {
+      await accrueReferralCommission(req.user!.id, PLANS[plan].cents);
     }
     res.json({ subscription: publicSub(sub) });
   }),

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { requireAuth, requireVerifiedEmail } from '../../middleware/auth';
+import { requireFeature } from '../subscription/subscription.guard';
 import { publicWriteLimiter } from '../../middleware/rateLimit';
 import * as service from './broadcasts.service';
 import type { Segment } from '../../models/Broadcast';
@@ -31,6 +32,7 @@ broadcastsRouter.post(
 // Authenticated creator routes.
 const creator = Router();
 creator.use(requireAuth);
+creator.use(requireFeature('email'));
 
 creator.get('/', asyncHandler(async (req, res) => res.json({ broadcasts: await service.listBroadcasts(req.user!.id) })));
 

@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { ApiException } from '@/lib/api';
 import { DashboardShell } from '@/components/DashboardShell';
+import { FeatureGate } from '@/components/FeatureGate';
 import { Skeleton } from '@/components/ui';
 import { Modal } from '@/components/Modal';
 import {
@@ -579,10 +580,12 @@ function AppointmentsContent({ initialBookings, initialBlocks }: { initialBookin
 
   const filtered = useMemo(() => {
     let list = bookings ?? [];
+    // "Status | Booked" chip: when active, show only confirmed bookings.
+    if (statusOn) list = list.filter((b) => b.status === 'confirmed');
     if (titleOn && titleQ) list = list.filter((b) => (b.title || '').toLowerCase().includes(titleQ.toLowerCase()));
     if (dateOn && dateQ) list = list.filter((b) => ymd(new Date(b.startAt)) === dateQ);
     return list;
-  }, [bookings, titleOn, titleQ, dateOn, dateQ]);
+  }, [bookings, statusOn, titleOn, titleQ, dateOn, dateQ]);
 
   function resetFilters() {
     setStatusOn(true); setTitleOn(false); setDateOn(false); setTitleQ(''); setDateQ('');
@@ -690,7 +693,9 @@ function AppointmentsContent({ initialBookings, initialBlocks }: { initialBookin
 export default function BookingsPage() {
   return (
     <DashboardShell title="My Appointments" hideTitle hideSubtitle maxWidth="max-w-[1280px]">
-      <AppointmentsContent />
+      <FeatureGate feature="bookings" name="Appointments" tier="Pro">
+        <AppointmentsContent />
+      </FeatureGate>
     </DashboardShell>
   );
 }

@@ -1,4 +1,49 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+/**
+ * Base URL of the backend API.
+ *
+ * In the browser we derive it from the page's OWN hostname so API calls stay
+ * SAME-SITE with the app (localhost↔localhost, 192.168.x↔192.168.x, etc.). This
+ * is what keeps the httpOnly refresh cookie (SameSite=Lax) flowing: if the app
+ * is served from `localhost` but the API sits on a LAN IP, the request is
+ * cross-site, the browser drops the cookie, and the user gets silently logged
+ * out the moment the short-lived access token expires.
+ *
+ * A production NEXT_PUBLIC_API_URL pointing at a real (non-local) host is always
+ * honored. On the server (SSR) we fall back to the env value.
+ */
+const API_PORT = process.env.NEXT_PUBLIC_API_PORT ?? '4000';
+
+function isLocalHost(host: string): boolean {
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host.endsWith('.local') ||
+    /^192\.168\./.test(host) ||
+    /^10\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+  );
+}
+
+function resolveApiUrl(): string {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/+$/, '');
+  if (typeof window !== 'undefined') {
+    // Honor an explicit production API URL (a non-local host) as-is.
+    if (envUrl) {
+      try {
+        if (!isLocalHost(new URL(envUrl).hostname)) return envUrl;
+      } catch {
+        /* malformed env URL — fall through to host-derived */
+      }
+    }
+    // Dev / LAN: always hit the API on the same host the page is served from,
+    // so cookies stay same-site regardless of localhost vs LAN IP access.
+    const { protocol, hostname } = window.location;
+    return `${protocol}//${hostname}:${API_PORT}`;
+  }
+  return envUrl ?? `http://localhost:${API_PORT}`;
+}
+
+export const API_URL = resolveApiUrl();
 
 export interface ApiError {
   code: string;
@@ -116,5 +161,6 @@ export async function fetchStorefront(username: string) {
       priceCents: number;
       currency: string;
     }[];
+    showBranding?: boolean;
   }>(`/api/storefront/${encodeURIComponent(username)}`, { credentials: false });
 }

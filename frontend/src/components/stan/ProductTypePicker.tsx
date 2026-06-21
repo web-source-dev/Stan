@@ -97,7 +97,8 @@ export function ProductTypeGrid() {
       </p>
       <button
         type="button"
-        className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-3.5 py-1.5 text-sm font-semibold text-brand-600"
+        onClick={() => { if (typeof window !== 'undefined') window.dispatchEvent(new Event('cs:open-stanley')); }}
+        className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-3.5 py-1.5 text-sm font-semibold text-brand-600 transition hover:bg-brand-100"
       >
         <IconSparkles size={15} /> Get product ideas
       </button>

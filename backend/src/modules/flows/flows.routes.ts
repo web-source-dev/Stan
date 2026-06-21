@@ -3,12 +3,14 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
+import { requireFeature } from '../subscription/subscription.guard';
 import { EmailFlowModel, type EmailFlowDoc } from '../../models/EmailFlow';
 import { AppError } from '../../utils/AppError';
 
 // Mounted at /api/flows.
 export const flowsRouter = Router();
 flowsRouter.use(requireAuth);
+flowsRouter.use(requireFeature('email'));
 
 function publicFlow(f: EmailFlowDoc) {
   return {

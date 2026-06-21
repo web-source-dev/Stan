@@ -17,6 +17,9 @@ const mediaSchema = new Schema(
     // The logical upload purpose (matches the sign-upload "kind"), kept for
     // folder context and analytics.
     kind: { type: String, default: '' },
+    // Logical organisation folder (independent of the Cloudinary storage path).
+    // '' = root / Uncategorized.
+    folder: { type: String, default: '', trim: true, maxlength: 120, index: true },
     filename: { type: String, default: '' },
     bytes: { type: Number, default: 0 },
     format: { type: String, default: '' },

@@ -42,6 +42,7 @@ export default async function StorefrontPage({ params }: Props) {
   if (!data) notFound();
 
   const { profile, theme, blocks, products, courses, bookingTypes } = data;
+  const showBranding = data.showBranding !== false; // Free plan shows the Stan badge
 
   const built = blocks && blocks.length ? hydrateBlocks(blocks) : defaultStoreBlocks();
 
@@ -103,6 +104,16 @@ export default async function StorefrontPage({ params }: Props) {
             >
               Already a customer? Access your purchases →
             </a>
+            {showBranding && (
+              <div className="mt-4">
+                <a
+                  href="/"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-black/10 bg-white/70 px-3.5 py-1.5 text-xs font-semibold opacity-80 shadow-xs transition hover:opacity-100"
+                >
+                  ⚡ Powered by Stan
+                </a>
+              </div>
+            )}
           </div>
         }
       />

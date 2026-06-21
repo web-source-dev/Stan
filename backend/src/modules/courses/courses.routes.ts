@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
+import { requireFeature } from '../subscription/subscription.guard';
 import * as service from './courses.service';
 
 const id = z.string().regex(/^[a-f0-9]{24}$/);
@@ -10,6 +11,7 @@ const idParam = z.object({ id });
 
 export const coursesRouter = Router();
 coursesRouter.use(requireAuth);
+coursesRouter.use(requireFeature('courses'));
 
 const courseBody = z.object({
   title: z.string().trim().min(1).max(140).optional(),

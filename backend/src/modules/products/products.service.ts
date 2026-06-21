@@ -37,6 +37,7 @@ type ProductInput = {
   fulfilmentNote?: string;
   accessUrl?: string;
   deliveryMode?: 'file' | 'url';
+  allowDownload?: boolean;
   redirectUrl?: string;
   confirmSubject?: string;
   confirmBody?: string;
@@ -118,6 +119,7 @@ function publicProduct(p: ProductDoc) {
     fulfilmentNote: p.fulfilmentNote,
     accessUrl: p.accessUrl,
     deliveryMode: p.deliveryMode,
+    allowDownload: p.allowDownload,
     redirectUrl: p.redirectUrl,
     confirmSubject: p.confirmSubject,
     reviewsEnabled: p.reviewsEnabled,
@@ -175,6 +177,7 @@ function productCreatePayload(input: ProductInput) {
     fulfilmentNote: input.fulfilmentNote ?? '',
     accessUrl: input.accessUrl ?? '',
     deliveryMode: input.deliveryMode ?? 'file',
+    allowDownload: input.allowDownload ?? false,
     redirectUrl: input.redirectUrl ?? '',
     confirmSubject: input.confirmSubject ?? '',
     confirmBody: input.confirmBody ?? '',
@@ -238,7 +241,7 @@ export async function updateProduct(creatorId: string, id: string, patch: Partia
     'coverImageUrl', 'coverPublicId', 'assets', 'ctaLabel', 'thankYouMessage', 'visibility',
     'productKind', 'thumbnailStyle', 'thumbnailButtonLabel', 'bottomTitle', 'discountPriceCents', 'deliveryMode',
     'billingInterval', 'cancelSubscriptionEnabled', 'cancelAfterMonths', 'fulfilmentNote', 'accessUrl',
-    'redirectUrl', 'confirmSubject', 'confirmBody',
+    'allowDownload', 'redirectUrl', 'confirmSubject', 'confirmBody',
     ...PRODUCT_OPTION_FIELDS,
   ];
   for (const f of fields) {

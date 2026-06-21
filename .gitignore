@@ -2,3 +2,11 @@
 # package-lock.json IS committed — it pins the exact dependency tree so the
 # MCP server install is reproducible and never relies on the npx cache.
 /node_modules/
+
+
+deep-research-report.md
+
+Env_Setup.md
+
+Readme.md
+Plan.md

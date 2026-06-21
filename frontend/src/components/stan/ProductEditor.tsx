@@ -11,6 +11,7 @@ import {
   IconCheck,
   IconChevronDown,
   IconCopy,
+  IconDownload,
   IconImage,
   IconLock,
   IconMail,
@@ -18,8 +19,11 @@ import {
   IconSmile,
   IconTrending,
   IconUsers,
+  IconX,
 } from '@/components/icons';
 import { useMediaLibrary } from '@/components/media/MediaLibrary';
+import { usePlan } from '@/lib/use-plan';
+import { FeatureLock } from '@/components/FeatureLock';
 import { getProductKindMeta, type ProductKind } from '@/lib/product-types';
 import {
   DEFAULT_CONFIRM_BODY,
@@ -42,6 +46,81 @@ import {
 } from '@/lib/product-options';
 import { cn } from '@/lib/cn';
 
+type ProductAsset = { publicId: string; resourceType: 'raw' | 'image' | 'video'; filename: string; bytes: number; format: string };
+
+/** Human-readable file size. */
+function fmtAssetBytes(bytes: number): string {
+  if (!bytes) return '';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let n = bytes;
+  let u = 0;
+  while (n >= 1024 && u < units.length - 1) {
+    n /= 1024;
+    u += 1;
+  }
+  return `${n.toFixed(n < 10 && u > 0 ? 1 : 0)} ${units[u]}`;
+}
+
+/** Shows the actual files attached to a product, each with a remove control. */
+function SelectedFiles({ assets, onRemove }: { assets: ProductAsset[]; onRemove: (index: number) => void }) {
+  if (assets.length === 0) return null;
+  return (
+    <ul className="mt-3 space-y-2">
+      {assets.map((a, i) => (
+        <li
+          key={(a.publicId || a.filename) + i}
+          className="flex items-center gap-3 rounded-xl border border-line bg-white px-3 py-2.5 shadow-xs"
+        >
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-brand-50 text-brand-600">
+            {a.resourceType === 'image' ? <IconImage size={16} /> : <IconDownload size={16} />}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium text-[#1a1a2e]" title={a.filename}>
+              {a.filename || 'Untitled file'}
+            </span>
+            <span className="text-xs text-neutral-400">
+              {[a.format?.toUpperCase(), fmtAssetBytes(a.bytes)].filter(Boolean).join(' · ')}
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={() => onRemove(i)}
+            aria-label={`Remove ${a.filename || 'file'}`}
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-neutral-400 transition hover:bg-red-50 hover:text-red-600"
+          >
+            <IconX size={15} />
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Toggle controlling whether buyers can download files or only preview them. */
+function DownloadToggle({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={value}
+      onClick={() => onChange(!value)}
+      className="mt-3 flex w-full items-start gap-3 rounded-xl border border-line bg-white px-3.5 py-3 text-left transition hover:border-brand-300"
+    >
+      <span className={cn('mt-0.5 inline-flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition', value ? 'bg-brand-600' : 'bg-neutral-300')}>
+        <span className={cn('h-4 w-4 rounded-full bg-white shadow-sm transition', value ? 'translate-x-4' : 'translate-x-0')} />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-[#1a1a2e]">Allow buyers to download files</span>
+        <span className="block text-xs text-neutral-500">
+          {value
+            ? 'Buyers can preview and download these files after purchase.'
+            : 'Preview-only — buyers can view the files after purchase but not download them.'}
+        </span>
+      </span>
+    </button>
+  );
+}
+
 export interface ProductEditorState {
   id?: string;
   title: string;
@@ -61,6 +140,7 @@ export interface ProductEditorState {
   coverPublicId: string;
   assets: { publicId: string; resourceType: 'raw' | 'image' | 'video'; filename: string; bytes: number; format: string }[];
   deliveryMode: 'file' | 'url';
+  allowDownload: boolean;
   redirectUrl: string;
   billingInterval: 'one_time' | 'month' | 'year';
   cancelSubscriptionEnabled: boolean;
@@ -767,9 +847,14 @@ export function ProductEditor({
   const [uploadNote, setUploadNote] = useState('');
   const [openOption, setOpenOption] = useState<string | null>(null);
   const [descRef, setDescRef] = useState<HTMLTextAreaElement | null>(null);
-  const [priceProUnlocked, setPriceProUnlocked] = useState(
-    initial.paymentPlan.enabled || initial.discountCodes.length > 0 || Boolean(initial.quantityLimit),
-  );
+  const { features } = usePlan();
+  // Plan-driven feature locks. While the plan is still loading (features null) we
+  // optimistically allow, so paying users never see a flash of locked controls.
+  const pricingToolsAllowed = features ? features.pricingTools : true;
+  const orderBumpsAllowed = features ? features.orderBumps : true;
+  const customFieldsAllowed = features ? features.customFields : true;
+  const affiliateAllowed = features ? features.affiliate : true;
+  const emailFlowsAllowed = features ? features.email : true;
   const [savedNote, setSavedNote] = useState('');
   const [storeHandle, setStoreHandle] = useState('');
   const [urlCopied, setUrlCopied] = useState(false);
@@ -859,6 +944,11 @@ export function ProductEditor({
     });
   }
 
+  // Remove one attached fulfilment file from the product.
+  function removeAsset(index: number) {
+    setForm((f) => ({ ...f, assets: f.assets.filter((_, i) => i !== index) }));
+  }
+
   function patch<K extends keyof ProductEditorState>(key: K, value: ProductEditorState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
   }
@@ -918,6 +1008,7 @@ export function ProductEditor({
       thumbnailStyle: form.thumbnailStyle,
       thumbnailButtonLabel: form.thumbnailButtonLabel,
       deliveryMode: form.deliveryMode,
+      allowDownload: form.allowDownload,
       redirectUrl: form.redirectUrl,
       billingInterval: form.billingInterval,
       cancelSubscriptionEnabled: form.cancelSubscriptionEnabled,
@@ -1119,7 +1210,9 @@ export function ProductEditor({
             </section>
 
             {meta.collectInfoOnThumbnail && (
-              <CollectInfoFields form={form} setForm={setForm} label={meta.collectInfoLabel} step={3} />
+              <FeatureLock locked={!customFieldsAllowed} label="Custom checkout fields are a Pro feature">
+                <CollectInfoFields form={form} setForm={setForm} label={meta.collectInfoLabel} step={3} />
+              </FeatureLock>
             )}
           </div>
         )}
@@ -1149,13 +1242,21 @@ export function ProductEditor({
               </div>
               <div className="pe-section-inner">
                 {form.deliveryMode === 'file' ? (
-                  <button type="button" onClick={pickFile} className="pe-file-drop pe-file-drop--product mt-2 w-full">
-                    <span className="text-sm font-medium text-[#6b7280]">Choose or Upload File(s)</span>
-                    <span className="pe-btn-outline">Browse library</span>
+                  <div className="mt-2 w-full">
+                    <button type="button" onClick={pickFile} className="pe-file-drop pe-file-drop--product w-full">
+                      <span className="text-sm font-medium text-[#6b7280]">Choose or Upload File(s)</span>
+                      <span className="pe-btn-outline">Browse library</span>
+                      {form.assets.length > 0 && (
+                        <span className="text-xs font-medium text-emerald-600">
+                          {form.assets.length} file{form.assets.length === 1 ? '' : 's'} attached · add more
+                        </span>
+                      )}
+                    </button>
+                    <SelectedFiles assets={form.assets} onRemove={removeAsset} />
                     {form.assets.length > 0 && (
-                      <span className="text-xs font-medium text-emerald-600">{form.assets.length} file(s) attached</span>
+                      <DownloadToggle value={form.allowDownload} onChange={(v) => patch('allowDownload', v)} />
                     )}
-                  </button>
+                  </div>
                 ) : (
                   <input
                     className="pe-input-outline mt-2"
@@ -1369,7 +1470,7 @@ export function ProductEditor({
                       </div>
                     </div>
                   )}
-                  {!priceProUnlocked && (
+                  {!pricingToolsAllowed && (
                     <div className="pe-locked-box">
                       <div className="pe-locked-blur space-y-3">
                         {lockedPriceFeatures.map((l) => (
@@ -1380,13 +1481,13 @@ export function ProductEditor({
                         ))}
                       </div>
                       <div className="pe-locked-overlay">
-                        <button type="button" onClick={() => setPriceProUnlocked(true)} className="pe-btn-outline">
+                        <Link href="/dashboard/settings?tab=billing" className="pe-btn-outline">
                           <IconLock size={15} /> Upgrade to Unlock
-                        </button>
+                        </Link>
                       </div>
                     </div>
                   )}
-                  {priceProUnlocked && (
+                  {pricingToolsAllowed && (
                   <>
                   <div className="flex flex-wrap gap-2 pt-1">
                     {!meta.membershipScheduling && (
@@ -1540,12 +1641,14 @@ export function ProductEditor({
             )}
 
             {meta.showCollectInfo && !meta.collectInfoOnThumbnail && (
-              <CollectInfoFields
-                form={form}
-                setForm={setForm}
-                label={meta.collectInfoLabel}
-                step={meta.showPrice ? 4 : 3}
-              />
+              <FeatureLock locked={!customFieldsAllowed} label="Custom checkout fields are a Pro feature">
+                <CollectInfoFields
+                  form={form}
+                  setForm={setForm}
+                  label={meta.collectInfoLabel}
+                  step={meta.showPrice ? 4 : 3}
+                />
+              </FeatureLock>
             )}
 
             {meta.deliveryStep !== 'none' && (
@@ -1590,13 +1693,21 @@ export function ProductEditor({
                         </div>
                       </div>
                       {form.deliveryMode === 'file' ? (
-                        <button type="button" onClick={pickFile} className="pe-file-drop mt-4 w-full">
-                          <span className="text-sm font-medium text-[#6b7280]">Choose or Upload File(s)</span>
-                          <span className="pe-btn-outline">Browse library</span>
+                        <div className="mt-4 w-full">
+                          <button type="button" onClick={pickFile} className="pe-file-drop w-full">
+                            <span className="text-sm font-medium text-[#6b7280]">Choose or Upload File(s)</span>
+                            <span className="pe-btn-outline">Browse library</span>
+                            {form.assets.length > 0 && (
+                              <span className="text-xs font-medium text-emerald-600">
+                                {form.assets.length} file{form.assets.length === 1 ? '' : 's'} attached · add more
+                              </span>
+                            )}
+                          </button>
+                          <SelectedFiles assets={form.assets} onRemove={removeAsset} />
                           {form.assets.length > 0 && (
-                            <span className="text-xs font-medium text-emerald-600">{form.assets.length} file(s) attached</span>
+                            <DownloadToggle value={form.allowDownload} onChange={(v) => patch('allowDownload', v)} />
                           )}
-                        </button>
+                        </div>
                       ) : (
                         <input
                           className="pe-input-outline mt-4"
@@ -1807,6 +1918,7 @@ export function ProductEditor({
               open={openOption === 'email-flows'}
               onToggle={() => setOpenOption(openOption === 'email-flows' ? null : 'email-flows')}
             >
+              <FeatureLock locked={!emailFlowsAllowed} label="Email flows are a Pro feature">
               <div className="space-y-3">
                 {form.emailFlows.map((step) => (
                   <div key={step.id} className="pe-subpanel space-y-2">
@@ -1921,6 +2033,7 @@ export function ProductEditor({
                   + Add Flow
                 </button>
               </div>
+              </FeatureLock>
             </AccordionPanel>
             )}
 
@@ -1931,6 +2044,7 @@ export function ProductEditor({
               open={openOption === 'order-bump'}
               onToggle={() => setOpenOption(openOption === 'order-bump' ? null : 'order-bump')}
             >
+              <FeatureLock locked={!orderBumpsAllowed} label="Order bumps are a Pro feature">
               <label className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#1a1a2e]">
                 <input
                   type="checkbox"
@@ -1974,6 +2088,7 @@ export function ProductEditor({
                   className="pe-input"
                 />
               </div>
+              </FeatureLock>
             </AccordionPanel>
             )}
 
@@ -1984,6 +2099,7 @@ export function ProductEditor({
               open={openOption === 'affiliate'}
               onToggle={() => setOpenOption(openOption === 'affiliate' ? null : 'affiliate')}
             >
+              <FeatureLock locked={!affiliateAllowed} label="Affiliate sharing is a Premium feature">
               <label className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#1a1a2e]">
                 <input
                   type="checkbox"
@@ -2021,6 +2137,7 @@ export function ProductEditor({
                   Affiliates earn {form.affiliate.commissionPercent}% when buyers purchase via their link.
                 </p>
               )}
+              </FeatureLock>
             </AccordionPanel>
             )}
 
@@ -2206,6 +2323,7 @@ export const EMPTY_PRODUCT: ProductEditorState = {
   coverPublicId: '',
   assets: [],
   deliveryMode: 'file',
+  allowDownload: false,
   redirectUrl: '',
   billingInterval: 'one_time',
   cancelSubscriptionEnabled: false,

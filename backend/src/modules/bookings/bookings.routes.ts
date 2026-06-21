@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
+import { requireFeature } from '../subscription/subscription.guard';
 import { publicWriteLimiter } from '../../middleware/rateLimit';
 import * as service from './bookings.service';
 
@@ -51,6 +52,7 @@ const typeBody = z.object({
 // ---- Creator routes (mounted at /api/booking-types) ----
 export const bookingTypesRouter = Router();
 bookingTypesRouter.use(requireAuth);
+bookingTypesRouter.use(requireFeature('bookings'));
 
 bookingTypesRouter.get('/', asyncHandler(async (req, res) => res.json({ bookingTypes: await service.listBookingTypes(req.user!.id) })));
 bookingTypesRouter.get('/bookings', asyncHandler(async (req, res) => res.json({ bookings: await service.listBookings(req.user!.id) })));

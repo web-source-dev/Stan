@@ -28,15 +28,30 @@ interface SignResponse {
 /** Obtains a backend signature for `kind` (auth + refresh handled by caller). */
 export type Signer = (kind: SignKind) => Promise<SignResponse>;
 
+interface CloudinaryUploadResponse {
+  public_id: string;
+  secure_url: string;
+  resource_type: 'image' | 'video' | 'raw';
+  bytes?: number;
+  format?: string;
+  width?: number;
+  height?: number;
+}
+
 /**
  * Upload a file directly to Cloudinary using a backend-signed request. The
  * backend binds the folder to the creator's tenant, so the signature can't be
  * used to write elsewhere. Throws if media isn't configured (signing returns 503).
+ *
+ * Uses XMLHttpRequest (not fetch) so callers can observe real upload progress
+ * via `onProgress` (0–100). The callback is optional; existing callers are
+ * unaffected.
  */
 export async function uploadToCloudinary(
   file: File,
   kind: SignKind,
   sign: Signer,
+  onProgress?: (pct: number) => void,
 ): Promise<UploadResult> {
   const { cloudName, apiKey, timestamp, signature, folder } = await sign(kind);
 
@@ -48,12 +63,28 @@ export async function uploadToCloudinary(
   form.append('signature', signature);
   form.append('folder', folder);
 
-  const uploadRes = await fetch(
-    `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`,
-    { method: 'POST', body: form },
-  );
-  if (!uploadRes.ok) throw new Error('Upload failed');
-  const data = await uploadRes.json();
+  const data = await new Promise<CloudinaryUploadResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `https://api.cloudinary.com/v1_1/${cloudName}/${resourceType}/upload`);
+    xhr.upload.onprogress = (e) => {
+      if (onProgress && e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as CloudinaryUploadResponse);
+        } catch {
+          reject(new Error('Upload failed'));
+        }
+      } else {
+        reject(new Error('Upload failed'));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.onabort = () => reject(new Error('Upload cancelled'));
+    xhr.send(form);
+  });
+
   return {
     publicId: data.public_id,
     url: data.secure_url,
@@ -73,6 +104,7 @@ export interface MediaItem {
   url: string;
   resourceType: 'image' | 'video' | 'raw';
   kind: string;
+  folder?: string;
   filename: string;
   bytes: number;
   format: string;
@@ -119,8 +151,9 @@ export async function uploadAndRecord(
   kind: SignKind,
   sign: Signer,
   authedRequest: AuthedRequest,
+  onProgress?: (pct: number) => void,
 ): Promise<UploadResult> {
-  const res = await uploadToCloudinary(file, kind, sign);
+  const res = await uploadToCloudinary(file, kind, sign, onProgress);
   await recordMedia(authedRequest, res, kind);
   return res;
 }

@@ -52,6 +52,15 @@ creatorLeads.get(
   }),
 );
 
+// Full per-customer profile + commerce analytics.
+creatorLeads.get(
+  '/:id/detail',
+  validate({ params: z.object({ id: z.string().regex(/^[a-f0-9]{24}$/) }) }),
+  asyncHandler(async (req, res) => {
+    res.json(await service.getCustomerDetail(req.user!.id, String(req.params.id)));
+  }),
+);
+
 const contactSchema = z.object({
   email: z.string().email().toLowerCase(),
   firstName: z.string().max(80).optional(),

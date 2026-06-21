@@ -17,7 +17,7 @@ async function main() {
     logger.info(`API listening on http://localhost:${env.PORT} (${env.NODE_ENV})`);
     if (!env.cloudinaryConfigured) logger.warn('Cloudinary not configured — uploads disabled');
     if (!env.emailConfigured) logger.warn('Resend not configured — emails will be logged only');
-    if (!env.instagramConfigured) logger.warn('Meta/Instagram not configured — AutoDM runs in simulation mode (replies logged, not sent)');
+    if (!env.instagramConfigured) logger.warn('Instagram not configured — AutoDM runs in simulation mode (replies logged, not sent)');
   });
 
   // In-process job runner for the foundation phase. Can be split into a

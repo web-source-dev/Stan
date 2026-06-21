@@ -1,12 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { ApiException } from '@/lib/api';
 import { DashboardShell } from '@/components/DashboardShell';
 import { Skeleton, Alert } from '@/components/ui';
 import { Modal } from '@/components/Modal';
-import { IconUsers, IconDots, IconChevronDown } from '@/components/icons';
+import { IconUsers, IconDots, IconChevronDown, IconChevronRight } from '@/components/icons';
 import { cn } from '@/lib/cn';
 
 interface Lead {
@@ -21,6 +22,7 @@ interface Lead {
   createdAt: string;
   purchases?: number;
   spentCents?: number;
+  tags?: string[];
 }
 
 function fmtDate(iso: string) {
@@ -254,24 +256,23 @@ function AddContactModal({ open, onClose, onDone }: { open: boolean; onClose: ()
 /* Customers CRM                                                       */
 /* ------------------------------------------------------------------ */
 
-type ChipKey = 'name' | 'email' | 'since' | 'purchases' | 'spent' | 'product' | 'subscription' | 'tag';
-const CHIPS: { value: ChipKey; label: string; filterable?: boolean }[] = [
-  { value: 'name', label: 'Name', filterable: true },
-  { value: 'email', label: 'Email', filterable: true },
+type ChipKey = 'name' | 'email' | 'since' | 'purchases' | 'spent' | 'tag';
+const CHIPS: { value: ChipKey; label: string }[] = [
+  { value: 'name', label: 'Name' },
+  { value: 'email', label: 'Email' },
   { value: 'since', label: 'Since' },
-  { value: 'purchases', label: 'Purchases' },
-  { value: 'spent', label: 'Spent' },
-  { value: 'product', label: 'Product' },
-  { value: 'subscription', label: 'Active Subscription' },
+  { value: 'purchases', label: 'Min purchases' },
+  { value: 'spent', label: 'Min spent' },
   { value: 'tag', label: 'Tag' },
 ];
 
 function CustomersContent({ initialLeads }: { initialLeads?: Lead[] }) {
   const { authedRequest } = useAuth();
+  const router = useRouter();
   const [leads, setLeads] = useState<Lead[] | null>(initialLeads ?? null);
   const [modalOpen, setModalOpen] = useState(false);
   const [active, setActive] = useState<ChipKey[]>([]);
-  const [q, setQ] = useState<{ name: string; email: string }>({ name: '', email: '' });
+  const [q, setQ] = useState({ name: '', email: '', since: '', purchases: '', spent: '', tag: '' });
   const [menuOpen, setMenuOpen] = useState(false);
 
   const load = useCallback(async () => {
@@ -290,6 +291,10 @@ function CustomersContent({ initialLeads }: { initialLeads?: Lead[] }) {
       const fullName = `${l.firstName} ${l.lastName}`.toLowerCase();
       if (active.includes('name') && q.name && !fullName.includes(q.name.toLowerCase())) return false;
       if (active.includes('email') && q.email && !l.email.toLowerCase().includes(q.email.toLowerCase())) return false;
+      if (active.includes('since') && q.since && new Date(l.createdAt) < new Date(q.since)) return false;
+      if (active.includes('purchases') && q.purchases && (l.purchases ?? 0) < Number(q.purchases)) return false;
+      if (active.includes('spent') && q.spent && (l.spentCents ?? 0) < Math.round(parseFloat(q.spent) * 100)) return false;
+      if (active.includes('tag') && q.tag && !(l.tags ?? []).some((t) => t.toLowerCase().includes(q.tag.toLowerCase()))) return false;
       return true;
     });
   }, [leads, active, q]);
@@ -367,8 +372,8 @@ function CustomersContent({ initialLeads }: { initialLeads?: Lead[] }) {
           </div>
         </div>
 
-        {/* Active text filters */}
-        {(active.includes('name') || active.includes('email')) && (
+        {/* Active filter inputs */}
+        {active.length > 0 && (
           <div className="mt-4 flex flex-wrap gap-2">
             {active.includes('name') && (
               <input
@@ -384,6 +389,44 @@ function CustomersContent({ initialLeads }: { initialLeads?: Lead[] }) {
                 placeholder="Email contains…"
                 value={q.email}
                 onChange={(e) => setQ({ ...q, email: e.target.value })}
+              />
+            )}
+            {active.includes('since') && (
+              <input
+                type="date"
+                title="Joined on or after"
+                className="w-44 rounded-lg border border-line-strong px-3 py-2 text-sm text-neutral-600 outline-none focus:border-brand-500"
+                value={q.since}
+                onChange={(e) => setQ({ ...q, since: e.target.value })}
+              />
+            )}
+            {active.includes('purchases') && (
+              <input
+                type="number"
+                min={0}
+                className="w-44 rounded-lg border border-line-strong px-3 py-2 text-sm outline-none focus:border-brand-500"
+                placeholder="Min purchases"
+                value={q.purchases}
+                onChange={(e) => setQ({ ...q, purchases: e.target.value })}
+              />
+            )}
+            {active.includes('spent') && (
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                className="w-44 rounded-lg border border-line-strong px-3 py-2 text-sm outline-none focus:border-brand-500"
+                placeholder="Min spent ($)"
+                value={q.spent}
+                onChange={(e) => setQ({ ...q, spent: e.target.value })}
+              />
+            )}
+            {active.includes('tag') && (
+              <input
+                className="w-56 rounded-lg border border-line-strong px-3 py-2 text-sm outline-none focus:border-brand-500"
+                placeholder="Tag contains…"
+                value={q.tag}
+                onChange={(e) => setQ({ ...q, tag: e.target.value })}
               />
             )}
           </div>
@@ -404,11 +447,16 @@ function CustomersContent({ initialLeads }: { initialLeads?: Lead[] }) {
                       <th className="px-2 pb-3 font-bold">Since</th>
                       <th className="px-2 pb-3 font-bold">Purchases</th>
                       <th className="px-2 pb-3 font-bold">Spent</th>
+                      <th className="px-2 pb-3" aria-label="View" />
                     </tr>
                   </thead>
                   <tbody>
                     {filtered.map((l) => (
-                      <tr key={l.id} className="border-b border-line/70 text-[15px] transition last:border-0 hover:bg-surface-subtle/60">
+                      <tr
+                        key={l.id}
+                        onClick={() => router.push(`/dashboard/leads/${l.id}`)}
+                        className="group cursor-pointer border-b border-line/70 text-[15px] transition last:border-0 hover:bg-surface-subtle/60"
+                      >
                         <td className="px-2 py-4 font-bold text-[#1a1c3a]">
                           {[l.firstName, l.lastName].filter(Boolean).join(' ') || '—'}
                         </td>
@@ -416,6 +464,11 @@ function CustomersContent({ initialLeads }: { initialLeads?: Lead[] }) {
                         <td className="whitespace-nowrap px-2 py-4 text-neutral-400">{fmtDate(l.createdAt)}</td>
                         <td className="px-2 py-4 text-[#1a1c3a]">{l.purchases ?? 0}</td>
                         <td className="px-2 py-4 font-bold text-emerald-600">{fmtMoney(l.spentCents ?? 0)}</td>
+                        <td className="px-2 py-4 text-right">
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-neutral-400 transition group-hover:text-brand-600">
+                            View <IconChevronRight size={15} />
+                          </span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>

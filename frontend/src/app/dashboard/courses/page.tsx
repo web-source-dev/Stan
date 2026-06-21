@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { DashboardShell } from '@/components/DashboardShell';
+import { FeatureGate } from '@/components/FeatureGate';
 import { Button, Card, Badge, EmptyState, Skeleton } from '@/components/ui';
 import { IconPlus, IconBook } from '@/components/icons';
 import { formatPrice } from '@/lib/types';
@@ -45,6 +46,7 @@ export default function CoursesPage() {
         </Button>
       }
     >
+      <FeatureGate feature="courses" name="Courses" tier="Pro">
       {courses === null ? (
         <div className="space-y-3">{[0, 1].map((i) => <Skeleton key={i} className="h-20 w-full" />)}</div>
       ) : courses.length === 0 ? (
@@ -86,6 +88,7 @@ export default function CoursesPage() {
           ))}
         </div>
       )}
+      </FeatureGate>
     </DashboardShell>
   );
 }

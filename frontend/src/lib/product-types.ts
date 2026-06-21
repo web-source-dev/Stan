@@ -244,6 +244,7 @@ export function buildInitialProduct(kind: string | null | undefined): ProductEdi
     coverPublicId: '',
     assets: [],
     deliveryMode: 'file',
+    allowDownload: false,
     redirectUrl: '',
     thumbnailStyle: 'callout',
     discountPriceDollars: '',

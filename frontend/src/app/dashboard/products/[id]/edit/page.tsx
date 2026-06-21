@@ -27,6 +27,7 @@ type ExtendedProduct = Product & {
   productKind?: string;
   discountPriceCents?: number;
   deliveryMode?: string;
+  allowDownload?: boolean;
   redirectUrl?: string;
   billingInterval?: 'one_time' | 'month' | 'year';
   cancelSubscriptionEnabled?: boolean;
@@ -106,9 +107,10 @@ export default function EditProductPage({ params }: { params: Promise<{ id: stri
         resourceType: a.resourceType as 'raw',
         filename: a.filename,
         bytes: a.bytes,
-        format: '',
+        format: (a as { format?: string }).format ?? '',
       })),
       deliveryMode: (p.deliveryMode as 'file' | 'url') ?? 'file',
+      allowDownload: p.allowDownload ?? false,
       redirectUrl: p.redirectUrl ?? '',
       billingInterval: p.billingInterval ?? 'one_time',
       cancelSubscriptionEnabled: p.cancelSubscriptionEnabled ?? false,

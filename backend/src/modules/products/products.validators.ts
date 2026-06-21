@@ -57,6 +57,7 @@ export const createProductSchema = z.object({
   fulfilmentNote: z.string().max(280).optional().default(''),
   accessUrl: z.string().max(1000).optional().or(z.literal('')).default(''),
   deliveryMode: z.enum(['file', 'url']).optional().default('file'),
+  allowDownload: z.boolean().optional().default(false),
   redirectUrl: z.string().max(1000).optional().or(z.literal('')).default(''),
   confirmSubject: z.string().max(200).optional().default(''),
   confirmBody: z.string().max(5000).optional().default(''),

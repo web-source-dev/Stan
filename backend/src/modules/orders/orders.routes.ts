@@ -16,7 +16,7 @@ ordersRouter.get(
   asyncHandler(async (req, res) => {
     const orders = await OrderModel.find({ creatorId: req.user!.id })
       .sort({ createdAt: -1 })
-      .limit(100);
+      .limit(500);
 
     // An order's productId may reference a Product, Course, or BookingType
     // (course/booking purchases reuse the order line). Resolve the item name

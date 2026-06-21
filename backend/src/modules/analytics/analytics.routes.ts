@@ -33,9 +33,26 @@ const creatorAnalytics = Router();
 creatorAnalytics.use(requireAuth);
 creatorAnalytics.get(
   '/summary',
-  validate({ query: z.object({ days: z.coerce.number().int().min(1).max(365).optional() }) }),
+  validate({
+    query: z.object({
+      days: z.coerce.number().int().min(1).max(365).optional(),
+      from: z.string().datetime().optional().or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()),
+      to: z.string().datetime().optional().or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()),
+      productId: z.string().regex(/^[a-f0-9]{24}$/).optional(),
+      source: z.string().max(60).optional(),
+    }),
+  }),
   asyncHandler(async (req, res) => {
-    res.json(await service.summary(req.user!.id, req.query.days ? Number(req.query.days) : undefined));
+    const q = req.query as { days?: string; from?: string; to?: string; productId?: string; source?: string };
+    res.json(
+      await service.summary(req.user!.id, {
+        days: q.days ? Number(q.days) : undefined,
+        from: q.from ? new Date(q.from) : undefined,
+        to: q.to ? new Date(q.to) : undefined,
+        productId: q.productId,
+        source: q.source,
+      }),
+    );
   }),
 );
 

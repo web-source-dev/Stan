@@ -1,10 +1,13 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { ApiException } from '@/lib/api';
 import { DashboardShell } from '@/components/DashboardShell';
+import { Modal } from '@/components/Modal';
+import { emitPlanChanged } from '@/lib/plan-events';
 import { Skeleton } from '@/components/ui';
 import {
   IconUsers, IconPlus, IconDollar, IconCard, IconBell, IconLock, IconShield, IconEye,
@@ -216,7 +219,7 @@ function ProfileTab({ initialProfile }: { initialProfile?: CreatorProfile }) {
       <h2 className="mt-10 text-lg font-bold tracking-tight text-[#1a1c3a]">Analytics</h2>
       <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-neutral-500">
         Want to include your Facebook/Google Pixel?
-        <button className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-600 transition hover:bg-brand-100">Upgrade Now</button>
+        <Link href="/dashboard/settings?tab=billing" className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-600 transition hover:bg-brand-100">Upgrade Now</Link>
       </div>
       <div className="mt-5 grid max-w-3xl gap-5 sm:grid-cols-2">
         <div><FieldLabel>Facebook Pixel Id</FieldLabel><input className={INPUT} value={analytics.facebookPixelId} onChange={(e) => setAnalytics({ ...analytics, facebookPixelId: e.target.value })} /></div>
@@ -357,7 +360,7 @@ function IntegrationsTab() {
                 <div className="text-lg font-bold text-[#1a1c3a]">Stanley IG</div>
                 <div className="text-sm text-neutral-400">Bundle add-on</div>
               </div>
-              <button className="rounded-full bg-brand-600 px-6 py-2.5 text-sm font-bold text-white transition hover:bg-brand-700">Activate</button>
+              <Link href="/dashboard/settings?tab=billing" className="rounded-full bg-brand-600 px-6 py-2.5 text-sm font-bold text-white transition hover:bg-brand-700">Activate</Link>
             </div>
             <div className="mt-5 grid grid-cols-2 gap-4 border-t border-line pt-4">
               <div>
@@ -416,18 +419,161 @@ function IntegrationsTab() {
 /* Billing                                                             */
 /* ------------------------------------------------------------------ */
 
-interface Sub { plan: string; status: string; label: string; priceCents: number; interval: string; stanleyAddon: boolean; trialEndsAt?: string; }
+interface PlanFeatures {
+  maxProducts: number | null;
+  courses: boolean;
+  bookings: boolean;
+  email: boolean;
+  landingPages: boolean;
+  autodm: boolean;
+  stanleyAI: boolean;
+  removeBranding: boolean;
+}
+interface Sub { plan: string; tier: string; nominalTier: string; status: string; label: string; priceCents: number; interval: string; stanleyAddon: boolean; trialEndsAt?: string; features: PlanFeatures; }
+interface PlanOpt { key: string; tier: string; cents: number; interval: string; label: string; features: PlanFeatures; }
+
+// Display rows for the comparison cards. `val` returns true/false (✓/✗) or text.
+const FEATURE_ROWS: { label: string; val: (f: PlanFeatures) => boolean | string }[] = [
+  { label: 'Digital products', val: (f) => (f.maxProducts === null ? 'Unlimited' : `${f.maxProducts}`) },
+  { label: 'Courses', val: (f) => f.courses },
+  { label: 'Bookings & appointments', val: (f) => f.bookings },
+  { label: 'Email broadcasts & flows', val: (f) => f.email },
+  { label: 'Landing pages', val: (f) => f.landingPages },
+  { label: 'AutoDM', val: (f) => f.autodm },
+  { label: 'Stanley AI assistant', val: (f) => f.stanleyAI },
+  { label: 'Remove “Powered by Stan”', val: (f) => f.removeBranding },
+];
+
+const TIER_BLURB: Record<string, string> = {
+  free: 'Get started and sell your first product.',
+  pro: 'Everything you need to grow — unlimited products, courses, bookings & email.',
+  premium: 'Pro + AutoDM and the Stanley AI assistant.',
+};
+
+function PlanPicker({ sub, plans, onSelect, busyKey }: { sub: Sub; plans: PlanOpt[]; onSelect: (key: string) => void; busyKey: string }) {
+  const [interval, setIntervalState] = useState<'month' | 'year'>(sub.interval === 'year' ? 'year' : 'month');
+  // One card per tier; for paid tiers pick the plan matching the billing interval.
+  const cards = ['free', 'pro', 'premium'].map((tier) => {
+    if (tier === 'free') return plans.find((p) => p.tier === 'free')!;
+    return plans.find((p) => p.tier === tier && p.interval === interval) ?? plans.find((p) => p.tier === tier)!;
+  });
+
+  return (
+    <div className={CARD}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-bold tracking-tight text-[#1a1c3a]">Choose your plan</h2>
+        <div className="inline-flex rounded-full bg-[#f1f1f5] p-1 text-sm font-semibold">
+          {(['month', 'year'] as const).map((iv) => (
+            <button
+              key={iv}
+              type="button"
+              onClick={() => setIntervalState(iv)}
+              className={cn('rounded-full px-4 py-1.5 transition', interval === iv ? 'bg-white text-[#1a1c3a] shadow-xs' : 'text-neutral-500')}
+            >
+              {iv === 'month' ? 'Monthly' : 'Yearly'}{iv === 'year' && <span className="ml-1 text-xs font-bold text-brand-600">save</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-5 grid gap-4 lg:grid-cols-3">
+        {cards.map((p) => {
+          const isCurrent = sub.nominalTier === p.tier && (p.tier === 'free' || sub.interval === p.interval) && sub.status !== 'canceled';
+          const highlight = p.tier === 'pro';
+          return (
+            <div
+              key={p.key}
+              className={cn(
+                'flex flex-col rounded-2xl border p-5',
+                highlight ? 'border-brand-400 ring-1 ring-brand-200' : 'border-line',
+              )}
+            >
+              <div className="flex items-center justify-between">
+                <div className="text-base font-bold text-[#1a1c3a]">{p.tier === 'free' ? 'Free' : p.label}</div>
+                {highlight && <span className="rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-bold text-brand-600">Popular</span>}
+              </div>
+              <div className="mt-2">
+                <span className="text-2xl font-bold text-[#1a1c3a]">{formatPrice(p.cents)}</span>
+                <span className="text-sm font-medium text-neutral-400">/{p.interval === 'year' ? 'yr' : 'mo'}</span>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-neutral-500">{TIER_BLURB[p.tier]}</p>
+
+              <ul className="mt-4 flex-1 space-y-2 text-sm">
+                {FEATURE_ROWS.map((row) => {
+                  const v = row.val(p.features);
+                  const on = v === true || (typeof v === 'string');
+                  return (
+                    <li key={row.label} className="flex items-center gap-2">
+                      <span className={cn('grid h-4 w-4 shrink-0 place-items-center rounded-full text-[10px] font-bold', on ? 'bg-success-100 text-success-700' : 'bg-neutral-100 text-neutral-400')}>
+                        {on ? '✓' : '×'}
+                      </span>
+                      <span className={on ? 'text-[#1a1c3a]' : 'text-neutral-400'}>
+                        {typeof v === 'string' ? `${v} ${row.label.toLowerCase()}` : row.label}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+
+              <button
+                type="button"
+                disabled={isCurrent || busyKey === p.key}
+                onClick={() => onSelect(p.key)}
+                className={cn(
+                  'mt-5 rounded-full px-4 py-2.5 text-sm font-bold transition disabled:cursor-default',
+                  isCurrent
+                    ? 'bg-[#eceef3] text-neutral-400'
+                    : highlight
+                      ? 'bg-brand-600 text-white hover:bg-brand-700'
+                      : 'border border-brand-400 text-brand-600 hover:bg-brand-50',
+                )}
+              >
+                {busyKey === p.key ? 'Updating…' : isCurrent ? 'Current plan' : p.tier === 'free' ? 'Downgrade' : 'Choose ' + (p.tier === 'free' ? 'Free' : p.label)}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function BillingTab({ initialSub }: { initialSub?: Sub }) {
   const { authedRequest } = useAuth();
   const [sub, setSub] = useState<Sub | null>(initialSub ?? null);
+  const [plans, setPlans] = useState<PlanOpt[]>([]);
   const [busy, setBusy] = useState('');
+  // Checkout-confirmation flow for switching plans.
+  const [pending, setPending] = useState<PlanOpt | null>(null);
+  const [step, setStep] = useState<'confirm' | 'processing' | 'done'>('confirm');
 
   const load = useCallback(async () => {
-    const res = await authedRequest<{ subscription: Sub }>('/api/subscription');
+    const res = await authedRequest<{ subscription: Sub; plans: PlanOpt[] }>('/api/subscription');
     setSub(res.subscription);
+    setPlans(res.plans ?? []);
   }, [authedRequest]);
-  useEffect(() => { if (initialSub !== undefined) return; void load(); }, [load, initialSub]);
+  useEffect(() => { void load(); }, [load]);
+
+  function requestSelect(plan: string) {
+    const opt = plans.find((p) => p.key === plan);
+    if (opt) { setStep('confirm'); setPending(opt); }
+  }
+
+  async function confirmSelect() {
+    if (!pending) return;
+    setStep('processing');
+    try {
+      // Demo: with Stripe unconfigured we simulate the checkout end-to-end —
+      // the backend activates the plan and we broadcast the change so feature
+      // gates (sidebar locks, etc.) update everywhere immediately.
+      const res = await authedRequest<{ subscription: Sub }>('/api/subscription/select', { method: 'POST', body: { plan: pending.key } });
+      setSub(res.subscription);
+      emitPlanChanged();
+      setStep('done');
+    } catch {
+      setPending(null);
+    }
+  }
 
   async function cancel() {
     setBusy('cancel');
@@ -442,6 +588,58 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
 
   return (
     <div className="space-y-6">
+      {plans.length > 0 && <PlanPicker sub={sub} plans={plans} onSelect={requestSelect} busyKey="" />}
+
+      <Modal
+        open={!!pending}
+        onClose={() => { if (step !== 'processing') setPending(null); }}
+        size="sm"
+        title={step === 'done' ? "You're all set 🎉" : pending?.tier === 'free' ? 'Switch to Free' : `Upgrade to ${pending?.label}`}
+      >
+        {pending && step === 'confirm' && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between rounded-2xl bg-[#f6f6fc] p-4">
+              <span className="font-bold text-[#1a1c3a]">{pending.tier === 'free' ? 'Free' : pending.label}</span>
+              <span className="font-bold text-[#1a1c3a]">{formatPrice(pending.cents)}<span className="text-sm font-medium text-neutral-400">/{pending.interval === 'year' ? 'yr' : 'mo'}</span></span>
+            </div>
+            <p className="text-sm text-neutral-500">
+              {pending.tier === 'free'
+                ? "You'll lose access to paid features (courses, bookings, email, AutoDM…). You can re-subscribe anytime."
+                : pending.tier === 'premium'
+                  ? 'Unlocks everything, including AutoDM and the Stanley AI assistant.'
+                  : 'Unlocks unlimited products, courses, bookings, email broadcasts & flows, and landing pages.'}
+            </p>
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800">
+              Demo mode: Stripe isn&apos;t configured, so this is a simulated checkout — no card is charged.
+            </div>
+          </div>
+        )}
+        {step === 'processing' && (
+          <div className="flex flex-col items-center gap-3 py-6 text-center">
+            <div className="h-8 w-8 animate-spin rounded-full border-2 border-brand-200 border-t-brand-600" />
+            <p className="text-sm font-medium text-neutral-500">Processing your subscription…</p>
+          </div>
+        )}
+        {step === 'done' && (
+          <div className="flex flex-col items-center gap-2 py-4 text-center">
+            <div className="grid h-12 w-12 place-items-center rounded-full bg-success-100 text-2xl text-success-700">✓</div>
+            <p className="text-sm text-neutral-600">You&apos;re now on <strong>{sub.label}</strong>. Your features have been updated.</p>
+          </div>
+        )}
+        <div className="mt-5 flex justify-end gap-2">
+          {step === 'confirm' && (
+            <>
+              <button type="button" onClick={() => setPending(null)} className="rounded-full px-4 py-2 text-sm font-semibold text-neutral-500 hover:text-ink">Cancel</button>
+              <button type="button" onClick={confirmSelect} className="rounded-full bg-brand-600 px-5 py-2 text-sm font-bold text-white hover:bg-brand-700">
+                {pending?.tier === 'free' ? 'Confirm downgrade' : 'Confirm & subscribe'}
+              </button>
+            </>
+          )}
+          {step === 'done' && (
+            <button type="button" onClick={() => setPending(null)} className="rounded-full bg-brand-600 px-5 py-2 text-sm font-bold text-white hover:bg-brand-700">Done</button>
+          )}
+        </div>
+      </Modal>
       <div className={CARD}>
         <div className="grid gap-8 lg:grid-cols-2">
         {/* Subscription */}
@@ -461,7 +659,7 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
                 {busy === 'cancel' ? 'Cancelling…' : 'Cancel Subscription'}
               </button>
             )}
-            <button className="rounded-full border border-brand-400 bg-white px-5 py-2.5 text-sm font-bold text-brand-600 transition hover:bg-brand-50">Manage Stanley IG</button>
+            <Link href="/dashboard/settings?tab=billing" className="rounded-full border border-brand-400 bg-white px-5 py-2.5 text-sm font-bold text-brand-600 transition hover:bg-brand-50">Manage Stanley IG</Link>
           </div>
         </div>
 

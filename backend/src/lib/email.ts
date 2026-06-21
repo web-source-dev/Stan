@@ -95,10 +95,11 @@ export function renderEmail<T extends EmailTemplate>(
           `<p>You bought <strong>${productTitle}</strong> for ${amount}.</p>` +
             (thankYouMessage ? `<p>${thankYouMessage}</p>` : '') +
             `<p>${button(fulfilmentUrl, 'Access your purchase')}</p>` +
-            `<p style="color:#888;font-size:12px">Keep this email — you can return to this link anytime to re-download.</p>`,
+            `<p style="color:#888;font-size:12px">For your security, opening the link asks you to confirm this email address with a one-time code — so only you can access your files. Keep this email; you can return to the link anytime to re-download.</p>`,
         ),
         text:
           `Thanks for buying ${productTitle} (${amount}). Access your purchase: ${fulfilmentUrl}` +
+          `\n\nFor your security, you'll confirm this email with a one-time code to unlock your files — so only you can open them.` +
           (thankYouMessage ? `\n\n${thankYouMessage}` : ''),
       };
     }

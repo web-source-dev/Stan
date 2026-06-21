@@ -6,27 +6,31 @@ import { IntegrationModel, type IntegrationDoc } from '../../models/Integration'
 import { AutoDMRuleModel } from '../../models/AutoDMRule';
 
 /**
- * Instagram AutoDM integration.
+ * Instagram AutoDM integration — "Instagram API with Instagram Login" flow
+ * (the same one stan.store uses).
  *
- * Real mode (Meta App ID/Secret present): completes Facebook Login OAuth,
- * discovers the linked Instagram business account, stores the page token, and
- * delivers replies through the Graph API in response to signed webhook events.
+ * Real mode (Instagram App ID/Secret present): the creator authorizes with their
+ * Instagram credentials directly (no Facebook Page), we exchange the code for a
+ * long-lived Instagram user token, store it, and deliver replies through the
+ * Instagram Graph API in response to signed webhook events.
  *
- * Simulation mode (no Meta credentials): the same keyword-matching engine runs,
- * but replies are logged instead of sent — so the feature is fully testable
- * locally and goes live the moment credentials are configured.
+ * Simulation mode (no credentials): the same keyword-matching engine runs, but
+ * replies are logged instead of sent — so the feature is fully testable locally
+ * and goes live the moment credentials are configured.
  */
 
-const GRAPH = `https://graph.facebook.com/${env.META_GRAPH_VERSION}`;
+// Instagram Login uses its own Graph host (graph.instagram.com), distinct from
+// the Facebook Graph host used by the Facebook-login flow.
+const GRAPH = `https://graph.instagram.com`;
+const GRAPH_VERSIONED = `${GRAPH}/${env.INSTAGRAM_GRAPH_VERSION}`;
 
-// Permissions needed to read comments/messages and reply on the creator's behalf.
+// Scopes for the Instagram Login messaging API. These are the same three the
+// real Stan requests (instagram_business_* family — note: NOT the instagram_*
+// / pages_* family used by the Facebook-login flow).
 const OAUTH_SCOPES = [
-  'instagram_basic',
-  'instagram_manage_messages',
-  'instagram_manage_comments',
-  'pages_show_list',
-  'pages_manage_metadata',
-  'business_management',
+  'instagram_business_basic',
+  'instagram_business_manage_messages',
+  'instagram_business_manage_comments',
 ].join(',');
 
 const STATE_TTL = '15m';
@@ -57,77 +61,102 @@ export function verifyOAuthState(state: string): string {
   return decoded.creatorId;
 }
 
-/** Build the Facebook OAuth consent URL the creator is redirected to. */
+/** Build the Instagram OAuth consent URL the creator is redirected to. */
 export function buildLoginUrl(creatorId: string): string {
   const params = new URLSearchParams({
-    client_id: env.META_APP_ID,
-    redirect_uri: env.META_OAUTH_REDIRECT_URI,
+    client_id: env.INSTAGRAM_APP_ID,
+    redirect_uri: env.INSTAGRAM_REDIRECT_URI,
     state: signOAuthState(creatorId),
     scope: OAUTH_SCOPES,
     response_type: 'code',
   });
-  return `https://www.facebook.com/${env.META_GRAPH_VERSION}/dialog/oauth?${params.toString()}`;
-}
-
-async function graphGet<T>(path: string, params: Record<string, string>): Promise<T> {
-  const qs = new URLSearchParams(params).toString();
-  const res = await fetch(`${GRAPH}${path}?${qs}`);
-  const body = (await res.json()) as T & { error?: { message?: string } };
-  if (!res.ok || body.error) {
-    throw new Error(`Graph GET ${path} failed: ${body.error?.message ?? res.status}`);
-  }
-  return body;
+  return `https://www.instagram.com/oauth/authorize?${params.toString()}`;
 }
 
 interface LinkedAccount {
   accountName: string;
+  /** The Instagram professional account id used to send messages and map webhooks. */
   igAccountId: string;
-  pageId: string;
-  pageAccessToken: string;
+  /** Long-lived Instagram user access token (authorizes sends for this account). */
+  accessToken: string;
   expiresAt?: Date;
 }
 
 /**
- * Exchange the OAuth code for a long-lived token, then find the first Facebook
- * Page that has an Instagram business account attached and return its page
- * token (which authorizes messaging/comment sends for that IG account).
+ * Exchange the OAuth code for a long-lived Instagram user token, then read the
+ * account's id + username. The user token authorizes messaging/comment sends for
+ * the creator's own Instagram professional account — no Facebook Page involved.
  */
 export async function exchangeCodeForAccount(code: string): Promise<LinkedAccount> {
-  // 1. code -> short-lived user token
-  const shortTok = await graphGet<{ access_token: string }>('/oauth/access_token', {
-    client_id: env.META_APP_ID,
-    client_secret: env.META_APP_SECRET,
-    redirect_uri: env.META_OAUTH_REDIRECT_URI,
-    code,
+  // 1. code -> short-lived user token (form-encoded POST to api.instagram.com).
+  //    Instagram strips a trailing "#_" fragment marker onto codes in some
+  //    flows; defensively drop it.
+  const cleanCode = code.replace(/#_$/, '');
+  const form = new URLSearchParams({
+    client_id: env.INSTAGRAM_APP_ID,
+    client_secret: env.INSTAGRAM_APP_SECRET,
+    grant_type: 'authorization_code',
+    redirect_uri: env.INSTAGRAM_REDIRECT_URI,
+    code: cleanCode,
   });
-
-  // 2. short-lived -> long-lived user token (~60 days)
-  const longTok = await graphGet<{ access_token: string; expires_in?: number }>('/oauth/access_token', {
-    grant_type: 'fb_exchange_token',
-    client_id: env.META_APP_ID,
-    client_secret: env.META_APP_SECRET,
-    fb_exchange_token: shortTok.access_token,
+  const shortRes = await fetch('https://api.instagram.com/oauth/access_token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form.toString(),
   });
-  const expiresAt = longTok.expires_in ? new Date(Date.now() + longTok.expires_in * 1000) : undefined;
+  const shortBody = (await shortRes.json().catch(() => ({}))) as {
+    access_token?: string;
+    user_id?: string | number;
+    // Newer responses may wrap the payload in a `data` array.
+    data?: { access_token?: string; user_id?: string | number }[];
+    error_message?: string;
+    error_type?: string;
+  };
+  const shortToken = shortBody.access_token ?? shortBody.data?.[0]?.access_token;
+  if (!shortRes.ok || !shortToken) {
+    throw new Error(`Instagram code exchange failed: ${shortBody.error_message ?? shortRes.status}`);
+  }
 
-  // 3. list pages with their IG business account + page tokens
-  const pages = await graphGet<{
-    data: { id: string; name: string; access_token: string; instagram_business_account?: { id: string; username?: string } }[];
-  }>('/me/accounts', {
-    fields: 'id,name,access_token,instagram_business_account{id,username}',
-    access_token: longTok.access_token,
-  });
+  // 2. short-lived -> long-lived user token (~60 days).
+  const longUrl =
+    `${GRAPH}/access_token?` +
+    new URLSearchParams({
+      grant_type: 'ig_exchange_token',
+      client_secret: env.INSTAGRAM_APP_SECRET,
+      access_token: shortToken,
+    }).toString();
+  const longRes = await fetch(longUrl);
+  const longBody = (await longRes.json().catch(() => ({}))) as {
+    access_token?: string;
+    expires_in?: number;
+    error?: { message?: string };
+  };
+  if (!longRes.ok || !longBody.access_token) {
+    throw new Error(`Instagram long-lived token exchange failed: ${longBody.error?.message ?? longRes.status}`);
+  }
+  const accessToken = longBody.access_token;
+  const expiresAt = longBody.expires_in ? new Date(Date.now() + longBody.expires_in * 1000) : undefined;
 
-  const page = pages.data.find((p) => p.instagram_business_account?.id);
-  if (!page || !page.instagram_business_account) {
-    throw new Error('No Instagram business account is linked to your Facebook Pages. Link one in Meta Business settings and try again.');
+  // 3. read the account id + username with the long-lived token.
+  const meUrl =
+    `${GRAPH}/me?` +
+    new URLSearchParams({ fields: 'user_id,username', access_token: accessToken }).toString();
+  const meRes = await fetch(meUrl);
+  const me = (await meRes.json().catch(() => ({}))) as {
+    user_id?: string | number;
+    username?: string;
+    id?: string;
+    error?: { message?: string };
+  };
+  const igAccountId = String(me.user_id ?? me.id ?? shortBody.user_id ?? shortBody.data?.[0]?.user_id ?? '');
+  if (!meRes.ok || !igAccountId) {
+    throw new Error(`Instagram profile lookup failed: ${me.error?.message ?? meRes.status}`);
   }
 
   return {
-    accountName: page.instagram_business_account.username || page.name,
-    igAccountId: page.instagram_business_account.id,
-    pageId: page.id,
-    pageAccessToken: page.access_token,
+    accountName: me.username || 'Instagram',
+    igAccountId,
+    accessToken,
     expiresAt,
   };
 }
@@ -139,10 +168,9 @@ export async function persistConnection(creatorId: string, account: LinkedAccoun
   doc.status = 'connected';
   doc.accountName = account.accountName;
   doc.externalAccountId = account.igAccountId;
-  doc.pageId = account.pageId;
   doc.connectedAt = new Date();
   doc.tokenExpiresAt = account.expiresAt;
-  doc.set('accessToken', account.pageAccessToken);
+  doc.set('accessToken', account.accessToken);
   await doc.save();
   return doc;
 }
@@ -153,9 +181,9 @@ export async function persistConnection(creatorId: string, account: LinkedAccoun
 
 /** Verify the X-Hub-Signature-256 header against the raw body using the app secret. */
 export function verifyWebhookSignature(rawBody: Buffer, signatureHeader: string | undefined): boolean {
-  if (!env.META_APP_SECRET || !signatureHeader) return false;
+  if (!env.INSTAGRAM_APP_SECRET || !signatureHeader) return false;
   const expected =
-    'sha256=' + crypto.createHmac('sha256', env.META_APP_SECRET).update(rawBody).digest('hex');
+    'sha256=' + crypto.createHmac('sha256', env.INSTAGRAM_APP_SECRET).update(rawBody).digest('hex');
   const a = Buffer.from(signatureHeader);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
@@ -166,7 +194,7 @@ export function verifyWebhookSignature(rawBody: Buffer, signatureHeader: string 
 /* ------------------------------------------------------------------ */
 
 async function graphPost(path: string, accessToken: string, payload: Record<string, unknown>): Promise<void> {
-  const res = await fetch(`${GRAPH}${path}?access_token=${encodeURIComponent(accessToken)}`, {
+  const res = await fetch(`${GRAPH_VERSIONED}${path}?access_token=${encodeURIComponent(accessToken)}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -196,6 +224,82 @@ export async function replyToComment(commentId: string, accessToken: string, tex
   await graphPost(`/${commentId}/replies`, accessToken, { message: text });
 }
 
+/**
+ * Send a private reply (DM) to the author of a comment, addressed by the comment
+ * id. This is the Instagram "private replies" API — it lets the business DM a
+ * commenter without them having messaged first (within a 7-day window).
+ */
+export async function sendPrivateReply(
+  igAccountId: string,
+  accessToken: string,
+  commentId: string,
+  text: string,
+): Promise<void> {
+  await graphPost(`/${igAccountId}/messages`, accessToken, {
+    recipient: { comment_id: commentId },
+    message: { text },
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Media (for the comment-automation post picker)                      */
+/* ------------------------------------------------------------------ */
+
+export interface AccountMedia {
+  id: string;
+  caption: string;
+  mediaType: string;
+  thumbnail: string;
+  permalink: string;
+}
+
+/**
+ * Fetch the connected account's recent posts so the creator can scope a
+ * comment-automation rule to a specific post. Returns [] when the account isn't
+ * connected (or credentials are unconfigured) so the UI degrades gracefully.
+ */
+export async function fetchAccountMedia(creatorId: string, limit = 24): Promise<AccountMedia[]> {
+  if (!env.instagramConfigured) return [];
+  const integration = await IntegrationModel.findOne({
+    creatorId,
+    provider: 'instagram',
+    status: 'connected',
+  }).select('+accessToken');
+  const token = integration?.get('accessToken') as string | undefined;
+  if (!integration || !token) return [];
+
+  const url =
+    `${GRAPH_VERSIONED}/me/media?` +
+    new URLSearchParams({
+      fields: 'id,caption,media_type,media_url,thumbnail_url,permalink',
+      limit: String(limit),
+      access_token: token,
+    }).toString();
+  const res = await fetch(url);
+  const body = (await res.json().catch(() => ({}))) as {
+    data?: {
+      id?: string;
+      caption?: string;
+      media_type?: string;
+      media_url?: string;
+      thumbnail_url?: string;
+      permalink?: string;
+    }[];
+    error?: { message?: string };
+  };
+  if (!res.ok || body.error) {
+    throw new Error(`Instagram media fetch failed: ${body.error?.message ?? res.status}`);
+  }
+  return (body.data ?? []).map((m) => ({
+    id: String(m.id ?? ''),
+    caption: m.caption ?? '',
+    mediaType: m.media_type ?? '',
+    // Video posts expose a thumbnail_url; images use media_url.
+    thumbnail: m.thumbnail_url || m.media_url || '',
+    permalink: m.permalink ?? '',
+  }));
+}
+
 /* ------------------------------------------------------------------ */
 /* Keyword engine                                                      */
 /* ------------------------------------------------------------------ */
@@ -217,6 +321,8 @@ interface RunAutoReplyInput {
   text: string;
   /** IGSID (for DM) or comment id (for comment); omitted in simulation. */
   targetId?: string;
+  /** The post id a comment was left on — used to scope post-specific rules. */
+  mediaId?: string;
   source: AutoReplySource;
 }
 
@@ -229,7 +335,16 @@ interface RunAutoReplyInput {
 export async function runAutoReply(input: RunAutoReplyInput): Promise<AutoReplyResult> {
   const platform = input.platform ?? 'instagram';
   const rules = await AutoDMRuleModel.find({ creatorId: input.creatorId, platform, enabled: true });
-  const rule = rules.find((r) => keywordMatches(input.text, r.keyword));
+  const rule = rules.find((r) => {
+    if (!keywordMatches(input.text, r.keyword)) return false;
+    // Post scoping applies only to real comment events: a rule pinned to a
+    // specific post must not fire on comments from other posts. Simulation and
+    // DMs are never post-scoped.
+    if (input.source === 'comment' && r.mediaId && input.mediaId && r.mediaId !== input.mediaId) {
+      return false;
+    }
+    return true;
+  });
   if (!rule) return { matched: false, delivery: 'skipped', detail: 'No enabled rule matched the message' };
 
   const replyText = composeReply(rule.reply, rule.linkUrl);
@@ -249,7 +364,15 @@ export async function runAutoReply(input: RunAutoReplyInput): Promise<AutoReplyR
     if (integration && token) {
       try {
         if (input.source === 'comment') {
-          await replyToComment(input.targetId!, token, replyText);
+          if (rule.dmOnComment) {
+            // Comment-to-DM: privately message the commenter with the payload,
+            // and optionally post a short public acknowledgement under the comment.
+            await sendPrivateReply(integration.externalAccountId, token, input.targetId!, replyText);
+            const ack = rule.publicReply?.trim();
+            if (ack) await replyToComment(input.targetId!, token, ack);
+          } else {
+            await replyToComment(input.targetId!, token, replyText);
+          }
         } else {
           await sendDirectMessage(integration.externalAccountId, token, input.targetId!, replyText);
         }

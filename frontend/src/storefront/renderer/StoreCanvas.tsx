@@ -991,7 +991,7 @@ export function StoreCanvas(props: CanvasProps) {
 
   const footerEl =
     props.emptyOffersSlot || props.footerSlot || defaultFooter ? (
-      <div className={`${t.contentPx} pt-2 lg:px-0`}>
+      <div className={`${t.contentPx} pt-2 text-center`}>
         {props.emptyOffersSlot}
         {props.footerSlot ?? defaultFooter}
       </div>
@@ -1017,9 +1017,45 @@ export function StoreCanvas(props: CanvasProps) {
     );
   }
 
-  // A clean, banner-free profile for the desktop left column (a full-width
-  // banner looks broken squeezed into a narrow side column). Avatar, name,
-  // category, bio and socials, centered — matching the Stan reference.
+  // Icon + label social pills for the desktop profile (annotation: add icons).
+  const profileSocials =
+    hcfg.showSocials && profile.socialLinks.length > 0 ? (
+      <div className="flex flex-wrap justify-center gap-2">
+        {profile.socialLinks.map((l, i) => (
+          <a
+            key={i}
+            href={mode === 'live' ? l.url : undefined}
+            target="_blank"
+            rel="noreferrer noopener"
+            className={`sf-link-pill inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-xs font-semibold shadow-xs ${t.tapClass}`}
+            style={{ backgroundColor: dark ? 'rgba(255,255,255,0.1)' : '#ffffff', color: ink, border: `1px solid ${dark ? 'rgba(255,255,255,0.14)' : '#eaeaf0'}` }}
+            aria-label={SOCIAL_LABEL[l.platform] ?? l.platform}
+          >
+            <SocialIcon platform={l.platform} size={15} />
+            {SOCIAL_LABEL[l.platform] ?? l.platform}
+          </a>
+        ))}
+      </div>
+    ) : null;
+
+  // Render each visible offer block once, skipping the redundant social-links
+  // block (it duplicates the profile's social icons). On desktop the email
+  // signup moves into the left profile column (under the socials), so it's left
+  // out of the offer grid there; on mobile it stays in the natural flow.
+  const offerItems: { key: string; type: string; el: ReactNode }[] = [];
+  ordered.forEach((b, idx) => {
+    if (b.type === 'links') return;
+    const node = renderBlock(b);
+    if (node === null || b.visible === false) return;
+    offerItems.push({ key: b.id, type: b.type, el: selectable(b, node, idx + 1) });
+  });
+  const emailItem = offerItems.find((it) => it.type === 'emailCapture') ?? null;
+  const cardItems = offerItems.filter((it) => it.type !== 'emailCapture');
+  const leftCol = cardItems.filter((_, i) => i % 2 === 0);
+  const rightCol = cardItems.filter((_, i) => i % 2 === 1);
+
+  // A clean, banner-free profile for the desktop left column: avatar, name,
+  // category, bio, social icons, and the email signup form beneath them.
   const desktopProfile = (
     <div className="flex flex-col items-center px-2 text-center">
       {showAvatar &&
@@ -1051,33 +1087,20 @@ export function StoreCanvas(props: CanvasProps) {
       {hcfg.showBio && profile.bio && (
         <p className="mt-3.5 max-w-[300px] text-[15px] leading-relaxed" style={{ color: sub }}>{profile.bio}</p>
       )}
-      <div className="mt-6">{renderSocials(true)}</div>
+      {profileSocials && <div className="mt-6 w-full">{profileSocials}</div>}
+      {emailItem && <div className="mt-7 w-full text-left">{emailItem.el}</div>}
     </div>
   );
 
-  // Render each visible offer block once, then place them: a single stacked
-  // column on mobile (matches the builder preview), and two explicit columns on
-  // desktop. Cards are dealt left/right in alternating order (row-major, like
-  // Stan) and each column is an independent flex stack with a fixed gap — so the
-  // spacing is always consistent and there are never empty/half rows.
-  const offerItems: { key: string; el: ReactNode }[] = [];
-  ordered.forEach((b, idx) => {
-    const node = renderBlock(b);
-    if (node === null || b.visible === false) return;
-    offerItems.push({ key: b.id, el: selectable(b, node, idx + 1) });
-  });
-  const leftCol = offerItems.filter((_, i) => i % 2 === 0);
-  const rightCol = offerItems.filter((_, i) => i % 2 === 1);
-
   const offersArea = (
     <>
-      {/* Mobile: one stacked column */}
+      {/* Mobile: one stacked column (cards + email, in order) */}
       <div className={`mt-8 ${t.contentPx} ${t.sectionGap} lg:hidden`}>
         {offerItems.map((it) => (
           <div key={it.key}>{it.el}</div>
         ))}
       </div>
-      {/* Desktop: two-column masonry, row-major (zigzag) order, even gaps */}
+      {/* Desktop: cards only, two-column row-major masonry with even gaps */}
       <div className="hidden lg:grid lg:grid-cols-2 lg:items-start lg:gap-6">
         <div className="flex flex-col gap-6">
           {leftCol.map((it) => (
@@ -1094,17 +1117,18 @@ export function StoreCanvas(props: CanvasProps) {
   );
 
   // Live page: stacked on mobile (identical to the preview), and a two-column
-  // layout on desktop — profile pinned/centered on the left, offers on the right.
+  // layout on desktop — profile + socials + signup on the left, cards on the
+  // right. The footer sits full-width, centered, beneath both columns.
   return shell(
-    <div className="mx-auto w-full max-w-md pb-[max(4rem,env(safe-area-inset-bottom))] lg:grid lg:max-w-5xl lg:grid-cols-[300px_minmax(0,1fr)] lg:items-start lg:gap-10 lg:px-8">
-      <div className="lg:sticky lg:top-0 lg:self-start lg:py-16">
-        <div className="lg:hidden">{headerEl}</div>
-        <div className="hidden lg:block">{desktopProfile}</div>
+    <div className="pb-[max(4rem,env(safe-area-inset-bottom))]">
+      <div className="mx-auto w-full max-w-md lg:grid lg:max-w-5xl lg:grid-cols-[300px_minmax(0,1fr)] lg:items-start lg:gap-10 lg:px-8">
+        <div className="lg:self-start lg:py-16">
+          <div className="lg:hidden">{headerEl}</div>
+          <div className="hidden lg:block">{desktopProfile}</div>
+        </div>
+        <div className="min-w-0 lg:py-14">{offersArea}</div>
       </div>
-      <div className="min-w-0 lg:py-14">
-        {offersArea}
-        {footerEl}
-      </div>
+      {footerEl && <div className="mx-auto w-full max-w-md lg:max-w-5xl lg:px-8">{footerEl}</div>}
     </div>,
   );
 }

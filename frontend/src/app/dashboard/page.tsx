@@ -52,7 +52,7 @@ function ThumbStanley() {
   );
 }
 
-function HomeCard({ href, title, body, thumb }: { href?: string; title: string; body: string; thumb: ReactNode }) {
+function HomeCard({ href, onClick, title, body, thumb }: { href?: string; onClick?: () => void; title: string; body: string; thumb: ReactNode }) {
   const inner = (
     <div className="flex items-center justify-between gap-4 rounded-2xl bg-white p-5 shadow-[0_1px_3px_rgba(15,15,25,0.05)] transition hover:shadow-[0_10px_28px_-12px_rgba(15,15,25,0.2)]">
       <div className="min-w-0">
@@ -64,7 +64,9 @@ function HomeCard({ href, title, body, thumb }: { href?: string; title: string; 
       {thumb}
     </div>
   );
-  return href ? <Link href={href} className="block">{inner}</Link> : <div>{inner}</div>;
+  if (href) return <Link href={href} className="block">{inner}</Link>;
+  if (onClick) return <button type="button" onClick={onClick} className="block w-full text-left">{inner}</button>;
+  return <div>{inner}</div>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -133,6 +135,7 @@ function Dashboard() {
             thumb={<ThumbProduct />}
           />
           <HomeCard
+            onClick={() => window.dispatchEvent(new Event('cs:open-stanley'))}
             title="Ask Stanley"
             body="Your very own AI Creator coach"
             thumb={<ThumbStanley />}

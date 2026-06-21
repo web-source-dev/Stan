@@ -31,13 +31,24 @@ export function signUpload(params: Record<string, string | number>): { signature
 }
 
 /**
- * Build a signed, time-limited delivery URL for a private/authenticated asset
- * (used for paid digital downloads in the commerce phase).
+ * Build a signed, time-limited delivery URL for a stored asset via Cloudinary's
+ * authenticated download API (api.cloudinary.com/.../download).
+ *
+ * This is used for raw documents (PDF/ZIP/etc.) because Cloudinary blocks plain
+ * public delivery of PDF and ZIP files by default ("Allow delivery of PDF and
+ * ZIP files" is off), so `res.cloudinary.com/...pdf` returns 401. The signed
+ * download endpoint bypasses that restriction and serves the file inline with
+ * the correct Content-Type and `Access-Control-Allow-Origin: *`, so it works for
+ * both in-browser preview (iframe) and download.
+ *
+ * `type: 'upload'` is REQUIRED — without it the API looks in the wrong storage
+ * type and returns 404 for normally-uploaded assets.
  */
 export function signedDeliveryUrl(publicId: string, resourceType = 'raw', expiresInSec = 300): string {
   const expiresAt = Math.floor(Date.now() / 1000) + expiresInSec;
   return cloudinary.utils.private_download_url(publicId, '', {
     resource_type: resourceType,
+    type: 'upload',
     expires_at: expiresAt,
   });
 }

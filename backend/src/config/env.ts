@@ -40,19 +40,26 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional().default(''),
   ASSISTANT_MODEL: z.string().default('claude-sonnet-4-6'),
 
-  // Meta / Instagram AutoDM (OPTIONAL — without App ID/Secret the AutoDM engine
-  // runs in simulation mode: rules still match and replies are logged, but no
-  // live OAuth/webhook/Graph delivery happens).
-  META_APP_ID: z.string().optional().default(''),
-  META_APP_SECRET: z.string().optional().default(''),
-  META_GRAPH_VERSION: z.string().default('v21.0'),
-  // Where Facebook redirects back after the OAuth consent dialog.
-  META_OAUTH_REDIRECT_URI: z
+  // Instagram AutoDM (OPTIONAL — without App ID/Secret the AutoDM engine runs in
+  // simulation mode: rules still match and replies are logged, but no live
+  // OAuth/webhook/Graph delivery happens).
+  //
+  // This uses the "Instagram API with Instagram Login" flow (the same one
+  // stan.store uses): the creator authorizes with their Instagram credentials
+  // directly — no Facebook Page required. Credentials come from the Instagram
+  // app shown under "API setup with Instagram login" in the Meta App Dashboard.
+  INSTAGRAM_APP_ID: z.string().optional().default(''),
+  INSTAGRAM_APP_SECRET: z.string().optional().default(''),
+  INSTAGRAM_GRAPH_VERSION: z.string().default('v21.0'),
+  // Where Instagram redirects the browser back after consent. Instagram requires
+  // an HTTPS URL (localhost is rejected), so in local dev this must be a public
+  // tunnel, e.g. https://<host>.trycloudflare.com/api/integrations/instagram/callback
+  INSTAGRAM_REDIRECT_URI: z
     .string()
     .optional()
     .default('http://localhost:4000/api/integrations/instagram/callback'),
   // Shared secret echoed back during the webhook subscription handshake.
-  META_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(''),
+  INSTAGRAM_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(''),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -80,10 +87,10 @@ export const env = {
   emailConfigured: Boolean(raw.RESEND_API_KEY),
   stripeConfigured: Boolean(raw.STRIPE_SECRET_KEY),
   aiConfigured: Boolean(raw.ANTHROPIC_API_KEY),
-  // Instagram is "configured" once we have Meta app credentials. Without them
-  // the AutoDM engine still runs (keyword match + simulated reply), so the
+  // Instagram is "configured" once we have Instagram app credentials. Without
+  // them the AutoDM engine still runs (keyword match + simulated reply), so the
   // feature is demonstrable locally and goes live the moment keys are added.
-  instagramConfigured: Boolean(raw.META_APP_ID && raw.META_APP_SECRET),
+  instagramConfigured: Boolean(raw.INSTAGRAM_APP_ID && raw.INSTAGRAM_APP_SECRET),
   // Dev-only fallback: when Stripe isn't configured (and we're not in
   // production), checkout simulates a completed purchase so the full
   // purchase → fulfilment → access flow is demonstrable without API keys.

@@ -3,10 +3,15 @@ import { z } from 'zod';
 import { env } from '../../config/env';
 import { AppError } from '../../utils/AppError';
 import { signUpload } from '../../lib/cloudinary';
+import { getUsage, getStorageOverview } from '../media/media.service';
 
 const signSchema = z.object({
   // Logical purpose of the upload; determines folder + constraints.
   kind: z.enum(['avatar', 'product_cover', 'product_file', 'course_cover', 'course_video', 'og_image']),
+  // Optional size of the file about to be uploaded, so we can refuse the
+  // signature up-front when it would blow the storage quota (saves a wasted
+  // client→Cloudinary upload). recordMedia re-checks authoritatively.
+  bytes: z.number().int().min(0).optional(),
 });
 
 const FOLDERS: Record<string, (creatorId: string) => string> = {
@@ -27,7 +32,25 @@ export async function signUploadHandler(req: Request, res: Response) {
   if (!env.cloudinaryConfigured) {
     throw new AppError(503, 'cloudinary_unconfigured', 'Media uploads are not configured');
   }
-  const { kind } = signSchema.parse(req.body);
+  const { kind, bytes } = signSchema.parse(req.body);
+
+  // Up-front quota guard: refuse to sign when the incoming file would exceed the
+  // creator's storage quota. Best-effort (recordMedia enforces authoritatively).
+  if (bytes && bytes > 0) {
+    const [{ usedBytes }, overview] = await Promise.all([
+      getUsage(req.user!.id),
+      getStorageOverview(req.user!.id),
+    ]);
+    if (overview.quotaBytes !== null && usedBytes + bytes > overview.quotaBytes) {
+      throw new AppError(
+        403,
+        'storage_exceeded',
+        'This upload would exceed your storage limit. Free up space or buy more storage.',
+        { used: usedBytes, incoming: bytes, quota: overview.quotaBytes, tier: overview.tier },
+      );
+    }
+  }
+
   const folder = FOLDERS[kind](req.user!.id);
 
   const { signature, timestamp } = signUpload({ folder });

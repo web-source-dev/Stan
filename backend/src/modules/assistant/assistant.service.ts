@@ -99,7 +99,7 @@ async function runTool(creatorId: string, name: string, input: Record<string, un
       };
     }
     case 'get_analytics':
-      return analyticsSummary(creatorId, typeof input.days === 'number' ? input.days : 30);
+      return analyticsSummary(creatorId, { days: typeof input.days === 'number' ? input.days : 30 });
     case 'list_products': {
       const ps = await listProducts(creatorId);
       return ps.map((p) => ({ id: p.id, title: p.title, type: p.type, status: p.status, priceCents: p.priceCents }));

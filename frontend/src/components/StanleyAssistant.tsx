@@ -37,6 +37,12 @@ export function StanleyAssistant() {
   }, [authedRequest]);
   useEffect(() => { loadSetup(); }, [loadSetup]);
   useEffect(() => { if (open) loadSetup(); }, [open, loadSetup]);
+  // Allow other UI (e.g. the "Ask Stanley" home card) to open the assistant.
+  useEffect(() => {
+    const openIt = () => setOpen(true);
+    window.addEventListener('cs:open-stanley', openIt);
+    return () => window.removeEventListener('cs:open-stanley', openIt);
+  }, []);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });

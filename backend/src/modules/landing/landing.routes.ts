@@ -3,12 +3,14 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
+import { requireFeature } from '../subscription/subscription.guard';
 import { LandingPageModel, type LandingPageDoc } from '../../models/LandingPage';
 import { AppError } from '../../utils/AppError';
 
 // Mounted at /api/landing.
 export const landingRouter = Router();
 landingRouter.use(requireAuth);
+landingRouter.use(requireFeature('landingPages'));
 
 function slugify(s: string): string {
   return s.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'page';

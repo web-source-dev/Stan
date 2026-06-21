@@ -3,12 +3,14 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { requireAuth } from '../../middleware/auth';
+import { requireFeature } from '../subscription/subscription.guard';
 import { env } from '../../config/env';
 import { chat, setupChecklist } from './assistant.service';
 
 // Mounted at /api/assistant.
 export const assistantRouter = Router();
 assistantRouter.use(requireAuth);
+assistantRouter.use(requireFeature('stanleyAI'));
 
 assistantRouter.get('/status', asyncHandler(async (_req, res) => {
   res.json({ aiConfigured: env.aiConfigured });
