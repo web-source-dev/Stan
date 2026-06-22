@@ -17,7 +17,9 @@ export type EmailTemplate =
   | 'purchase_receipt'
   | 'broadcast'
   | 'booking_confirmation'
-  | 'customer_login_code';
+  | 'booking_reminder'
+  | 'customer_login_code'
+  | 'login_code';
 
 interface TemplateData {
   email_verification: { verifyUrl: string };
@@ -42,9 +44,19 @@ interface TemplateData {
     meetingUrl?: string;
     manageUrl: string;
   };
+  booking_reminder: {
+    title: string;
+    whenText: string;
+    startsInText: string;
+    meetingUrl?: string;
+    manageUrl: string;
+  };
   customer_login_code: {
     code: string;
     creatorName: string;
+  };
+  login_code: {
+    code: string;
   };
 }
 
@@ -142,6 +154,35 @@ export function renderEmail<T extends EmailTemplate>(
             `<p style="color:#888;font-size:12px">This code expires in 10 minutes. If you didn't request it, you can ignore this email.</p>`,
         ),
         text: `Your ${creatorName} access code is ${code}. It expires in 10 minutes.`,
+      };
+    }
+    case 'booking_reminder': {
+      const { title, whenText, startsInText, meetingUrl, manageUrl } = data as TemplateData['booking_reminder'];
+      return {
+        subject: `Reminder: ${title} is ${startsInText}`,
+        html: layout(
+          'Your booking is coming up',
+          `<p>This is a friendly reminder that <strong>${title}</strong> starts <strong>${startsInText}</strong>.</p>` +
+            `<p>${whenText}</p>` +
+            (meetingUrl ? `<p>${button(meetingUrl, 'Join the meeting')}</p>` : '') +
+            `<p style="font-size:13px"><a href="${manageUrl}">Reschedule or cancel</a></p>`,
+        ),
+        text: `Reminder: ${title} is ${startsInText}.\n${whenText}` +
+          (meetingUrl ? `\nMeeting: ${meetingUrl}` : '') +
+          `\nManage: ${manageUrl}`,
+      };
+    }
+    case 'login_code': {
+      const { code } = data as TemplateData['login_code'];
+      return {
+        subject: `Your login code: ${code}`,
+        html: layout(
+          'Your login code',
+          `<p>Use this code to finish signing in to your CreatorStore account:</p>` +
+            `<p style="font-size:30px;font-weight:700;letter-spacing:6px;margin:16px 0">${code}</p>` +
+            `<p style="color:#888;font-size:12px">This code expires in 10 minutes. If you didn't try to log in, change your password.</p>`,
+        ),
+        text: `Your CreatorStore login code is ${code}. It expires in 10 minutes. If this wasn't you, change your password.`,
       };
     }
     case 'password_changed': {

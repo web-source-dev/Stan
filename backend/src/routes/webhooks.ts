@@ -1,6 +1,7 @@
 import { Router, raw } from 'express';
 import { asyncHandler } from '../utils/asyncHandler';
 import { handleStripeWebhook } from '../modules/webhooks/stripe.webhook';
+import { handlePayPalWebhook } from '../modules/webhooks/paypal.webhook';
 import { verifyInstagramWebhook, handleInstagramWebhook } from '../modules/webhooks/instagram.webhook';
 
 /**
@@ -11,6 +12,8 @@ import { verifyInstagramWebhook, handleInstagramWebhook } from '../modules/webho
 export const webhookRouter = Router();
 
 webhookRouter.post('/stripe', raw({ type: 'application/json' }), asyncHandler(handleStripeWebhook));
+
+webhookRouter.post('/paypal', raw({ type: 'application/json' }), asyncHandler(handlePayPalWebhook));
 
 webhookRouter.post('/resend', raw({ type: 'application/json' }), (_req, res) => {
   res.status(501).json({ error: { code: 'not_implemented', message: 'Resend webhooks land in the email phase' } });

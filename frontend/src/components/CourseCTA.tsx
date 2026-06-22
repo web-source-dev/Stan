@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiRequest, ApiException } from '@/lib/api';
 import { track } from '@/lib/track';
 import { formatPrice } from '@/lib/types';
@@ -22,17 +22,25 @@ export function CourseCTA({
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [paypal, setPaypal] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
 
-  async function go(e: React.FormEvent) {
-    e.preventDefault();
+  useEffect(() => {
+    if (priceCents <= 0) return;
+    apiRequest<{ paypal: boolean }>(`/api/checkout/payment-methods/${encodeURIComponent(username)}`, { credentials: false })
+      .then((m) => setPaypal(m.paypal))
+      .catch(() => {});
+  }, [username, priceCents]);
+
+  async function start(provider: 'card' | 'paypal') {
+    if (busy) return;
     setBusy(true);
     setError('');
     track(username, 'checkout_start');
     try {
       if (priceCents > 0) {
-        const res = await apiRequest<{ url: string }>('/api/checkout/course-session', {
-          method: 'POST', credentials: false, body: { username, slug, email },
-        });
+        const path = provider === 'paypal' ? '/api/checkout/paypal/course-session' : '/api/checkout/course-session';
+        const res = await apiRequest<{ url: string }>(path, { method: 'POST', credentials: false, body: { username, slug, email } });
         window.location.href = res.url;
       } else {
         const res = await apiRequest<{ accessToken: string }>('/api/learn/enroll', {
@@ -50,8 +58,17 @@ export function CourseCTA({
     }
   }
 
+  function go(e: React.FormEvent) {
+    e.preventDefault();
+    void start('card');
+  }
+  function payWithPayPal() {
+    if (formRef.current && !formRef.current.reportValidity()) return;
+    void start('paypal');
+  }
+
   return (
-    <form onSubmit={go} className="mt-4 space-y-2.5">
+    <form ref={formRef} onSubmit={go} className="mt-4 space-y-2.5">
       <input
         type="email"
         required
@@ -68,6 +85,18 @@ export function CourseCTA({
       >
         {busy ? 'Working…' : priceCents > 0 ? `Buy · ${formatPrice(priceCents, currency)}` : 'Enroll free'}
       </button>
+      {priceCents > 0 && paypal && (
+        <button
+          type="button"
+          onClick={payWithPayPal}
+          disabled={busy}
+          aria-label="Pay with PayPal"
+          className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#ffc439] py-3 text-sm font-bold text-[#003087] transition hover:brightness-[1.03] disabled:opacity-60"
+        >
+          <span>Pay with</span>
+          <span className="font-extrabold italic"><span className="text-[#003087]">Pay</span><span className="text-[#009cde]">Pal</span></span>
+        </button>
+      )}
       {error && <p className="text-xs font-medium text-danger-600">{error}</p>}
     </form>
   );

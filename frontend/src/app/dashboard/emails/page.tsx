@@ -254,7 +254,8 @@ function FlowsTab() {
 /* ------------------------------------------------------------------ */
 
 type Segment = 'all_leads' | 'customers' | 'subscribers';
-interface Broadcast { id: string; subject: string; segment: string; status: string; recipientCount: number; sentAt: string | null; createdAt: string; }
+type Repeat = 'none' | 'weekly' | 'monthly';
+interface Broadcast { id: string; subject: string; segment: string; status: string; scheduledAt: string | null; repeat: Repeat; recipientCount: number; sentAt: string | null; createdAt: string; }
 const SEGMENTS: { value: Segment; label: string }[] = [
   { value: 'all_leads', label: 'All contacts' },
   { value: 'subscribers', label: 'Subscribers' },
@@ -271,6 +272,10 @@ function BroadcastsTab() {
   const [error, setError] = useState('');
   const [sent, setSent] = useState('');
   const [busy, setBusy] = useState(false);
+  // Scheduling.
+  const [mode, setMode] = useState<'now' | 'schedule'>('now');
+  const [when, setWhen] = useState('');
+  const [repeat, setRepeat] = useState<Repeat>('none');
 
   const loadList = useCallback(async () => {
     const res = await authedRequest<{ broadcasts: Broadcast[] }>('/api/broadcasts/manage');
@@ -286,13 +291,32 @@ function BroadcastsTab() {
     e.preventDefault();
     setError(''); setSent(''); setBusy(true);
     try {
-      await authedRequest('/api/broadcasts/manage/send', { method: 'POST', body: { subject, bodyText: body, segment } });
-      setSent(`Broadcast queued to ${count ?? 0} recipient(s).`);
-      setSubject(''); setBody('');
+      const body_: Record<string, unknown> = { subject, bodyText: body, segment };
+      if (mode === 'schedule') {
+        if (!when) { setError('Pick a date and time to schedule.'); setBusy(false); return; }
+        const iso = new Date(when).toISOString();
+        if (new Date(iso).getTime() <= Date.now()) { setError('Choose a time in the future.'); setBusy(false); return; }
+        body_.scheduledAt = iso;
+        body_.repeat = repeat;
+      }
+      await authedRequest('/api/broadcasts/manage/send', { method: 'POST', body: body_ });
+      setSent(
+        mode === 'schedule'
+          ? `Scheduled for ${new Date(when).toLocaleString()}${repeat !== 'none' ? ` (repeats ${repeat})` : ''} · ${count ?? 0} recipient(s).`
+          : `Broadcast queued to ${count ?? 0} recipient(s).`,
+      );
+      setSubject(''); setBody(''); setWhen(''); setRepeat('none'); setMode('now');
       await loadList();
     } catch (err) {
       setError(err instanceof ApiException ? err.message : 'Could not send');
     } finally { setBusy(false); }
+  }
+
+  async function cancelScheduled(id: string) {
+    try {
+      await authedRequest(`/api/broadcasts/manage/${id}/cancel`, { method: 'POST' });
+      await loadList();
+    } catch { /* ignore */ }
   }
 
   return (
@@ -317,8 +341,37 @@ function BroadcastsTab() {
           </div>
           <div><FieldLabel>Subject</FieldLabel><input className={INPUT} required value={subject} onChange={(e) => setSubject(e.target.value)} /></div>
           <div><FieldLabel>Message</FieldLabel><textarea className={cn(INPUT, 'resize-y leading-relaxed')} rows={8} required value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write your update…" /></div>
+
+          {/* When to send */}
+          <div>
+            <FieldLabel>When</FieldLabel>
+            <div className="flex gap-2">
+              {(['now', 'schedule'] as const).map((m) => (
+                <button key={m} type="button" onClick={() => setMode(m)} className={cn('rounded-full px-4 py-2 text-sm font-semibold transition', mode === m ? 'bg-brand-600 text-white' : 'bg-brand-50 text-brand-600 hover:bg-brand-100')}>
+                  {m === 'now' ? 'Send now' : 'Schedule'}
+                </button>
+              ))}
+            </div>
+            {mode === 'schedule' && (
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <FieldLabel>Date &amp; time</FieldLabel>
+                  <input type="datetime-local" className={INPUT} value={when} min={new Date(Date.now() + 5 * 60000).toISOString().slice(0, 16)} onChange={(e) => setWhen(e.target.value)} />
+                </div>
+                <div>
+                  <FieldLabel>Repeat</FieldLabel>
+                  <select className={INPUT} value={repeat} onChange={(e) => setRepeat(e.target.value as Repeat)}>
+                    <option value="none">Don&apos;t repeat (one-time)</option>
+                    <option value="weekly">Weekly newsletter</option>
+                    <option value="monthly">Monthly newsletter</option>
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+
           <button type="submit" disabled={busy || count === 0} className="w-full rounded-full bg-brand-600 py-3.5 text-[15px] font-bold text-white shadow-soft transition hover:bg-brand-700 disabled:bg-neutral-200 disabled:text-neutral-400 disabled:shadow-none">
-            {busy ? 'Sending…' : count === 0 ? 'No recipients in this segment' : `Send to ${count ?? 0} recipient(s)`}
+            {busy ? 'Working…' : count === 0 ? 'No recipients in this segment' : mode === 'schedule' ? 'Schedule broadcast' : `Send to ${count ?? 0} recipient(s)`}
           </button>
         </form>
       </div>
@@ -336,9 +389,19 @@ function BroadcastsTab() {
               <div key={b.id} className="flex items-center justify-between gap-3 rounded-2xl bg-white p-4 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">
                 <div className="min-w-0">
                   <div className="truncate font-bold text-[#1a1c3a]">{b.subject}</div>
-                  <div className="mt-0.5 text-xs text-neutral-500">{SEGMENTS.find((s) => s.value === b.segment)?.label ?? b.segment} · {b.recipientCount} sent</div>
+                  <div className="mt-0.5 text-xs text-neutral-500">
+                    {SEGMENTS.find((s) => s.value === b.segment)?.label ?? b.segment}
+                    {b.status === 'scheduled' && b.scheduledAt
+                      ? ` · ${new Date(b.scheduledAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}${b.repeat !== 'none' ? ` · repeats ${b.repeat}` : ''}`
+                      : ` · ${b.recipientCount} sent`}
+                  </div>
                 </div>
-                <Badge tone={b.status === 'sent' ? 'success' : b.status === 'failed' ? 'danger' : 'warn'}>{b.status}</Badge>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Badge tone={b.status === 'sent' ? 'success' : b.status === 'canceled' || b.status === 'failed' ? 'danger' : 'warn'}>{b.status}</Badge>
+                  {b.status === 'scheduled' && (
+                    <button onClick={() => cancelScheduled(b.id)} className="rounded-full border border-line-strong px-3 py-1 text-xs font-bold text-neutral-600 transition hover:border-danger-300 hover:text-danger-600">Cancel</button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -352,8 +415,15 @@ function BroadcastsTab() {
 /* Page                                                                */
 /* ------------------------------------------------------------------ */
 
+const EMAIL_TABS = [
+  { key: 'flows', label: 'Flows' },
+  { key: 'broadcasts', label: 'Broadcasts' },
+  { key: 'templates', label: 'Templates' },
+] as const;
+type EmailTab = (typeof EMAIL_TABS)[number]['key'];
+
 function EmailsView() {
-  const [tab, setTab] = useState<'flows' | 'broadcasts'>('flows');
+  const [tab, setTab] = useState<EmailTab>('flows');
   return (
     <>
       <div className="rounded-2xl bg-[#fcf6bd] px-6 py-4 text-center text-[15px] font-bold text-[#1a1c3a]">
@@ -362,23 +432,100 @@ function EmailsView() {
         to start selling
       </div>
 
-      <div className="mt-6 flex gap-3">
-        {(['flows', 'broadcasts'] as const).map((t) => (
+      <div className="mt-6 flex flex-wrap gap-3">
+        {EMAIL_TABS.map((t) => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
+            key={t.key}
+            onClick={() => setTab(t.key)}
             className={cn(
               'rounded-xl px-4 py-2.5 text-[15px] font-semibold transition',
-              tab === t ? 'bg-brand-50 text-brand-600 ring-1 ring-inset ring-brand-200' : 'border border-line bg-white text-brand-600 hover:bg-brand-50/50',
+              tab === t.key ? 'bg-brand-50 text-brand-600 ring-1 ring-inset ring-brand-200' : 'border border-line bg-white text-brand-600 hover:bg-brand-50/50',
             )}
           >
-            {t === 'flows' ? 'Flows' : 'Broadcasts'}
+            {t.label}
           </button>
         ))}
       </div>
 
-      <div className="mt-6">{tab === 'flows' ? <FlowsTab /> : <BroadcastsTab />}</div>
+      <div className="mt-6">{tab === 'flows' ? <FlowsTab /> : tab === 'broadcasts' ? <BroadcastsTab /> : <TemplatesTab />}</div>
     </>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Templates preview                                                   */
+/* ------------------------------------------------------------------ */
+
+interface EmailPreview { key: string; label: string; subject: string; html: string; text: string }
+interface EmailConfig { configured: boolean; from: string; sandbox: boolean }
+
+function TemplatesTab() {
+  const { authedRequest } = useAuth();
+  const [templates, setTemplates] = useState<EmailPreview[] | null>(null);
+  const [config, setConfig] = useState<EmailConfig | null>(null);
+  const [active, setActive] = useState(0);
+
+  useEffect(() => {
+    authedRequest<{ templates: EmailPreview[]; config: EmailConfig }>('/api/account/email-previews')
+      .then((r) => { setTemplates(r.templates); setConfig(r.config); })
+      .catch(() => setTemplates([]));
+  }, [authedRequest]);
+
+  if (templates === null) return <Skeleton className="h-96 w-full rounded-3xl" />;
+  const current = templates[active];
+
+  return (
+    <div className="space-y-4">
+      {/* Config status */}
+      {config && (
+        <div className={cn(
+          'rounded-2xl border px-4 py-3 text-sm',
+          config.configured ? 'border-success-200 bg-success-50 text-success-800' : 'border-amber-200 bg-amber-50 text-amber-800',
+        )}>
+          {config.configured ? (
+            <>
+              <strong>Email delivery is configured.</strong> Sending from <span className="font-mono">{config.from}</span>.
+              {config.sandbox && ' (Resend sandbox sender — delivers only to your own account email until you verify a custom domain.)'}
+            </>
+          ) : (
+            <><strong>Email is not configured.</strong> Emails are logged to the server console instead of sent. Set <span className="font-mono">RESEND_API_KEY</span> to enable delivery.</>
+          )}
+        </div>
+      )}
+
+      <div className="grid gap-5 lg:grid-cols-[260px_minmax(0,1fr)]">
+        {/* Template list */}
+        <div className="rounded-3xl bg-white p-3 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">
+          <ul className="space-y-1">
+            {templates.map((t, i) => (
+              <li key={t.key}>
+                <button
+                  onClick={() => setActive(i)}
+                  className={cn(
+                    'w-full rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition',
+                    i === active ? 'bg-brand-50 text-brand-700' : 'text-ink hover:bg-surface-muted',
+                  )}
+                >
+                  {t.label}
+                  <span className="mt-0.5 block truncate text-xs font-normal text-neutral-400">{t.subject}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* Preview */}
+        <div className="rounded-3xl bg-white p-5 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">
+          <div className="mb-3 border-b border-line pb-3">
+            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-400">Subject</div>
+            <div className="mt-0.5 font-bold text-[#1a1c3a]">{current.subject}</div>
+          </div>
+          <div className="overflow-hidden rounded-2xl border border-line bg-[#f3f4f6]">
+            <iframe title={`${current.label} preview`} srcDoc={current.html} className="h-[560px] w-full bg-white" sandbox="" />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

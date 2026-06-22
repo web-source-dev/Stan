@@ -8,10 +8,12 @@ import { CourseModel } from '../../models/Course';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { EntitlementModel } from '../../models/Entitlement';
 import { EnrollmentModel } from '../../models/Enrollment';
-import { getConnectedAccountId, canAcceptPayments } from '../payments/connect.service';
+import { getConnectedAccountId, canAcceptPayments, getPayPalPayee } from '../payments/connect.service';
 import { recordAudit } from '../../lib/audit';
 import { computeCheckoutPricing } from './checkout-pricing';
 import { upsertCustomerLead } from '../leads/leads.service';
+import { CheckoutIntentModel, type CheckoutIntentDoc } from '../../models/CheckoutIntent';
+import { createOrder, approveUrl, captureOrder, captureId } from '../../lib/paypal';
 
 const DEMO_BUYER_EMAIL = 'demo-buyer@stan.test';
 
@@ -37,6 +39,122 @@ function demoSession(parts: {
 function demoSuccessUrl(kind: string, token?: string): string {
   const base = `${env.APP_URL}/checkout/success?demo=1&kind=${kind}`;
   return token ? `${base}&token=${token}` : base;
+}
+
+/** Post-checkout success URL (real payments). The success page renders the access link from kind+token. */
+function successUrl(kind: string, token?: string): string {
+  const base = `${env.APP_URL}/checkout/success?kind=${kind}`;
+  return token ? `${base}&token=${token}` : base;
+}
+
+const INTENT_TTL_MS = 3 * 60 * 60 * 1000; // 3h
+
+/**
+ * Create a PayPal order + persist a checkout intent, returning the buyer-facing
+ * approval URL. The intent carries the Stripe-shaped metadata so capture can
+ * fulfil via the shared fulfilment path.
+ */
+async function startPayPalOrder(args: {
+  creatorId: string;
+  kind: 'product' | 'course' | 'booking';
+  metadata: Record<string, string>;
+  amountCents: number;
+  currency: string;
+  email?: string;
+  description?: string;
+  brandName?: string;
+  payeeEmail: string;
+  cancelUrl: string;
+}): Promise<{ url: string; paypalOrderId: string }> {
+  const customId = `ci_${randomUUID()}`;
+  const order = await createOrder({
+    amountCents: args.amountCents,
+    currency: args.currency,
+    description: args.description,
+    payeeEmail: args.payeeEmail,
+    customId,
+    brandName: args.brandName,
+    returnUrl: `${env.APP_URL}/checkout/paypal/return?kind=${args.kind}`,
+    cancelUrl: args.cancelUrl,
+  });
+  const url = approveUrl(order);
+  if (!url) throw new AppError(502, 'paypal_error', 'PayPal did not return an approval link');
+
+  await CheckoutIntentModel.create({
+    provider: 'paypal',
+    providerOrderId: order.id,
+    creatorId: args.creatorId,
+    kind: args.kind,
+    metadata: args.metadata,
+    amountCents: args.amountCents,
+    currency: args.currency,
+    buyerEmail: args.email?.toLowerCase() ?? '',
+    successKind: args.kind,
+    expiresAt: new Date(Date.now() + INTENT_TTL_MS),
+  });
+
+  return { url, paypalOrderId: order.id };
+}
+
+/** Re-derive the post-capture success URL (with the access token) for an intent. */
+async function successUrlForIntent(intent: CheckoutIntentDoc): Promise<string> {
+  const meta = (intent.metadata ?? {}) as Record<string, string>;
+  if (intent.kind === 'product' && meta.productId) {
+    const ent = await EntitlementModel.findOne({ buyerEmail: intent.buyerEmail, productId: meta.productId });
+    return successUrl('product', ent?.accessToken);
+  }
+  if (intent.kind === 'course' && meta.courseId) {
+    const enr = await EnrollmentModel.findOne({ buyerEmail: intent.buyerEmail, courseId: meta.courseId });
+    return successUrl('course', enr?.accessToken);
+  }
+  return successUrl(intent.kind);
+}
+
+/**
+ * Capture an approved PayPal order and fulfil it through the shared path.
+ * Idempotent: a completed intent (or a re-capture) returns the success URL
+ * without re-fulfilling — fulfilment itself is also keyed by the order id.
+ */
+export async function capturePayPalOrder(orderId: string): Promise<{ url: string }> {
+  const intent = await CheckoutIntentModel.findOne({ providerOrderId: orderId });
+  if (!intent) throw AppError.notFound('Checkout not found or expired');
+  if (intent.status === 'completed') return { url: await successUrlForIntent(intent) };
+
+  const cap = await captureOrder(orderId);
+  if (cap.status !== 'COMPLETED') {
+    throw new AppError(402, 'paypal_not_completed', 'Your PayPal payment was not completed.');
+  }
+  const buyerEmail = (intent.buyerEmail || cap.payer?.email_address || '').toLowerCase();
+  if (!buyerEmail) throw new AppError(400, 'paypal_no_email', 'PayPal did not return a buyer email');
+
+  const { fulfilCheckoutSession } = await import('./fulfilment.service');
+  const session = {
+    id: `pp_${orderId}`,
+    object: 'checkout.session',
+    payment_status: 'paid',
+    customer_email: buyerEmail,
+    customer_details: { email: buyerEmail },
+    amount_total: intent.amountCents,
+    currency: intent.currency,
+    payment_intent: captureId(cap) ?? `pp_${orderId}`,
+    metadata: intent.metadata,
+  } as unknown as Stripe.Checkout.Session;
+  await fulfilCheckoutSession(session, 'paypal');
+
+  intent.status = 'completed';
+  intent.buyerEmail = buyerEmail;
+  await intent.save();
+
+  recordAudit({
+    action: 'checkout.paypal_captured',
+    actorType: 'anonymous',
+    creatorId: String(intent.creatorId),
+    targetType: intent.kind,
+    targetId: (intent.metadata as Record<string, string>)?.productId ?? '',
+    metadata: { orderId, amountCents: intent.amountCents },
+  });
+
+  return { url: await successUrlForIntent(intent) };
 }
 
 export interface CheckoutInput {
@@ -240,6 +358,111 @@ export async function previewCheckoutPricing(input: {
   };
 }
 
+/** PayPal checkout for a product. Returns a redirect URL (approval or demo success). */
+/** Which payment methods a creator's storefront can offer (drives the buyer UI). */
+export async function getPaymentMethods(username: string): Promise<{ card: boolean; paypal: boolean }> {
+  const profile = await CreatorProfileModel.findOne({ username });
+  if (!profile || !profile.published) throw AppError.notFound('Storefront not found');
+  const creatorId = String(profile.userId);
+  const paypal = env.paypalDemo || (env.paypalConfigured && Boolean(await getPayPalPayee(creatorId)));
+  const card = env.demoCheckout || (await canAcceptPayments(creatorId));
+  return { card, paypal };
+}
+
+export async function createPayPalProductCheckout(input: CheckoutInput): Promise<{ url: string }> {
+  const { creatorId, product, profile } = await loadPublishedProduct(input.username, input.slug);
+  if (product.priceCents <= 0) throw AppError.badRequest('This product is free — use the claim endpoint instead');
+
+  validateCustomFields(product, input.customFieldValues);
+  const pricing = computeCheckoutPricing(product, { discountCode: input.discountCode, orderBump: input.orderBump });
+
+  const metadata: Record<string, string> = {
+    itemType: 'product',
+    productId: product.id,
+    creatorId,
+    source: input.source ?? '',
+  };
+  if (pricing.appliedDiscountCode) metadata.discountCode = pricing.appliedDiscountCode;
+  if (input.orderBump && pricing.orderBumpCents > 0) metadata.orderBump = '1';
+  if (input.affiliateRef) metadata.affiliateRef = input.affiliateRef;
+  if (input.name) metadata.buyerName = input.name;
+  if (input.customFieldValues && Object.keys(input.customFieldValues).length) {
+    metadata.customFields = JSON.stringify(input.customFieldValues).slice(0, 450);
+  }
+  metadata.fee = String(applicationFee(pricing.totalCents));
+
+  if (env.paypalDemo) {
+    const { fulfilCheckoutSession } = await import('./fulfilment.service');
+    const email = (input.email || DEMO_BUYER_EMAIL).toLowerCase();
+    const session = demoSession({ metadata, amountCents: pricing.totalCents, currency: product.currency, email });
+    await fulfilCheckoutSession(session, 'paypal_demo');
+    const ent = await EntitlementModel.findOne({ buyerEmail: email, productId: product.id });
+    return { url: demoSuccessUrl('product', ent?.accessToken) };
+  }
+  if (!env.paypalConfigured) throw new AppError(503, 'paypal_unconfigured', 'PayPal is not configured');
+  const payeeEmail = await getPayPalPayee(creatorId);
+  if (!payeeEmail) throw new AppError(409, 'paypal_not_ready', 'This creator has not connected PayPal');
+
+  const { url } = await startPayPalOrder({
+    creatorId,
+    kind: 'product',
+    metadata,
+    amountCents: pricing.totalCents,
+    currency: product.currency,
+    email: input.email,
+    description: product.title,
+    brandName: profile.displayName || profile.username,
+    payeeEmail,
+    cancelUrl: `${env.APP_URL}/${input.username}/product/${input.slug}`,
+  });
+  return { url };
+}
+
+/** PayPal checkout for a course. Returns a redirect URL (approval or demo success). */
+export async function createPayPalCourseCheckout(input: CheckoutInput): Promise<{ url: string }> {
+  const profile = await CreatorProfileModel.findOne({ username: input.username });
+  if (!profile || !profile.published) throw AppError.notFound('Storefront not found');
+  const creatorId = String(profile.userId);
+  const course = await CourseModel.findOne({ creatorId, slug: input.slug, status: 'published' });
+  if (!course) throw AppError.notFound('Course not found');
+  if (course.priceCents <= 0) throw AppError.badRequest('This course is free; use enroll instead');
+
+  const metadata: Record<string, string> = {
+    itemType: 'course',
+    courseId: course.id,
+    creatorId,
+    source: input.source ?? '',
+    fee: String(applicationFee(course.priceCents)),
+    ...(input.name ? { buyerName: input.name } : {}),
+  };
+
+  if (env.paypalDemo) {
+    const { fulfilCheckoutSession } = await import('./fulfilment.service');
+    const email = (input.email || DEMO_BUYER_EMAIL).toLowerCase();
+    const session = demoSession({ metadata, amountCents: course.priceCents, currency: course.currency, email });
+    await fulfilCheckoutSession(session, 'paypal_demo');
+    const enr = await EnrollmentModel.findOne({ buyerEmail: email, courseId: course.id });
+    return { url: demoSuccessUrl('course', enr?.accessToken) };
+  }
+  if (!env.paypalConfigured) throw new AppError(503, 'paypal_unconfigured', 'PayPal is not configured');
+  const payeeEmail = await getPayPalPayee(creatorId);
+  if (!payeeEmail) throw new AppError(409, 'paypal_not_ready', 'This creator has not connected PayPal');
+
+  const { url } = await startPayPalOrder({
+    creatorId,
+    kind: 'course',
+    metadata,
+    amountCents: course.priceCents,
+    currency: course.currency,
+    email: input.email,
+    description: course.title,
+    brandName: profile.displayName || profile.username,
+    payeeEmail,
+    cancelUrl: `${env.APP_URL}/${input.username}`,
+  });
+  return { url };
+}
+
 export async function createBookingCheckoutSession(input: {
   creatorId: string;
   bookingId: string;
@@ -248,8 +471,35 @@ export async function createBookingCheckoutSession(input: {
   currency: string;
   email: string;
   username: string;
+  provider?: 'stripe' | 'paypal';
 }) {
   const fee = applicationFee(input.priceCents);
+
+  // PayPal path (real or demo) — booking confirms on capture (or instantly in demo).
+  if (input.provider === 'paypal') {
+    const metadata = { itemType: 'booking', bookingId: input.bookingId, creatorId: input.creatorId, fee: String(fee) };
+    if (env.paypalDemo) {
+      const { confirmBookingFromSession } = await import('../bookings/bookings.service');
+      const session = demoSession({ metadata, amountCents: input.priceCents, currency: input.currency, email: input.email });
+      await confirmBookingFromSession(session, 'paypal_demo');
+      return { url: demoSuccessUrl('booking'), sessionId: session.id };
+    }
+    if (!env.paypalConfigured) throw new AppError(503, 'paypal_unconfigured', 'PayPal is not configured');
+    const payeeEmail = await getPayPalPayee(input.creatorId);
+    if (!payeeEmail) throw new AppError(409, 'paypal_not_ready', 'This creator has not connected PayPal');
+    const { url, paypalOrderId } = await startPayPalOrder({
+      creatorId: input.creatorId,
+      kind: 'booking',
+      metadata,
+      amountCents: input.priceCents,
+      currency: input.currency,
+      email: input.email,
+      description: input.title,
+      payeeEmail,
+      cancelUrl: `${env.APP_URL}/${input.username}`,
+    });
+    return { url, sessionId: paypalOrderId };
+  }
 
   if (env.demoCheckout) {
     const { confirmBookingFromSession } = await import('../bookings/bookings.service');

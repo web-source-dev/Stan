@@ -67,6 +67,10 @@ Validated on startup in `backend/src/config/env.ts`. The server **will not start
 | `EMAIL_FROM` | No | `CreatorStore <onboarding@example.com>` | From address for emails |
 | `STRIPE_SECRET_KEY` | No | empty | Real payments |
 | `STRIPE_WEBHOOK_SECRET` | No | empty | Stripe webhook signature verification |
+| `PAYPAL_CLIENT_ID` | No | empty | PayPal checkout (blank → demo mode in dev) |
+| `PAYPAL_SECRET` | No | empty | PayPal REST app secret |
+| `PAYPAL_ENV` | No | `sandbox` | `sandbox` \| `live` |
+| `PAYPAL_WEBHOOK_ID` | No | empty | Verifies `/webhooks/paypal` (capture-fallback + refunds) |
 | `ANTHROPIC_API_KEY` | No | empty | Stanley AI assistant (full chat) |
 | `ASSISTANT_MODEL` | No | `claude-sonnet-4-6` | Anthropic model id for assistant |
 
@@ -221,6 +225,31 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 ```
 
 5. **Connect** (creator payouts): complete Stripe Connect setup in the dashboard when you enable creator payouts in Settings → Payments.
+
+---
+
+### PayPal — payments (OPTIONAL)
+
+If `PAYPAL_CLIENT_ID`/`PAYPAL_SECRET` are blank in **development**, the "Pay with PayPal" button runs in **demo mode** — it simulates a completed capture so the full purchase → fulfilment → access flow is testable without PayPal. In **production**, real PayPal requires these keys.
+
+This is a **platform-level** integration: one PayPal REST app for the whole platform, and each creator connects their own **PayPal payout email** in Settings → Payments (funds route to that email via the order's `payee`).
+
+1. Go to https://developer.paypal.com/dashboard/ → **Apps & Credentials**.
+2. Toggle **Sandbox** (testing) or **Live**.
+3. **Create App** (Merchant) → copy **Client ID** → `PAYPAL_CLIENT_ID`, **Secret** → `PAYPAL_SECRET`.
+4. Set `PAYPAL_ENV=sandbox` (or `live`).
+5. (Recommended) In the app's **Webhooks**, add an endpoint `https://YOUR_PUBLIC_HOST/webhooks/paypal` subscribed to `CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.CAPTURE.REVERSED`; copy the **Webhook ID** → `PAYPAL_WEBHOOK_ID`. This adds a capture-fallback (if the buyer doesn't return to the site) and refund sync (refunding in PayPal revokes access).
+
+```env
+PAYPAL_CLIENT_ID=...
+PAYPAL_SECRET=...
+PAYPAL_ENV=sandbox
+PAYPAL_WEBHOOK_ID=...
+```
+
+> **Note:** the platform 5% fee is **recorded** on each order but not automatically split — true marketplace fee collection needs PayPal Partner/Commerce Platform. Each creator receives the full payment to their PayPal email.
+
+> **Test without PayPal:** leave the keys blank in dev — "Pay with PayPal" simulates the capture and grants access, just like the Stripe demo checkout.
 
 ---
 

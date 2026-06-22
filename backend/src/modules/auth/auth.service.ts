@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { env } from '../../config/env';
 import { AppError } from '../../utils/AppError';
 import { UserModel, type UserDoc } from '../../models/User';
@@ -22,6 +23,7 @@ export interface SessionTokens {
 
 const VERIFY_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const RESET_TTL_MS = 60 * 60 * 1000; // 1h
+const TWO_FACTOR_TTL_MS = 10 * 60 * 1000; // 10m
 // A refresh token presented again within this window of being rotated is treated
 // as a benign concurrent refresh / client retry (rejected softly), not as token
 // theft. Reuse *after* this window still trips reuse-detection and kills the
@@ -98,7 +100,26 @@ export async function signup(email: string, password: string, ctx: RequestContex
   return { user: publicUser(user), tokens };
 }
 
-export async function login(email: string, password: string, ctx: RequestContext) {
+/** Issue a one-time 6-digit login code (2FA) and email it to the user. */
+async function createTwoFactorChallenge(user: UserDoc): Promise<{ id: string; code: string }> {
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  // One active challenge per user.
+  await AuthTokenModel.deleteMany({ userId: user._id, type: 'two_factor' });
+  const token = await AuthTokenModel.create({
+    userId: user._id,
+    type: 'two_factor',
+    tokenHash: hashToken(code),
+    expiresAt: new Date(Date.now() + TWO_FACTOR_TTL_MS),
+  });
+  await enqueueEmail(user.email, 'login_code', { code }).catch(() => {});
+  return { id: token.id, code };
+}
+
+export type LoginResult =
+  | { user: ReturnType<typeof publicUser>; tokens: SessionTokens }
+  | { twoFactorRequired: true; challengeId: string; devCode?: string };
+
+export async function login(email: string, password: string, ctx: RequestContext): Promise<LoginResult> {
   const user = await UserModel.findOne({ email }).select('+passwordHash');
   // Constant-ish failure path: same error whether email or password is wrong.
   if (!user) {
@@ -112,6 +133,36 @@ export async function login(email: string, password: string, ctx: RequestContext
     recordAudit({ action: 'auth.login_failed', actorId: user.id, actorType: 'user', ...ctx });
     throw AppError.unauthorized('Invalid email or password');
   }
+
+  // Two-factor: password is correct, but require an emailed code before a session.
+  if (user.get('twoFactorEnabled')) {
+    const challenge = await createTwoFactorChallenge(user);
+    recordAudit({ action: 'auth.2fa_challenge', actorId: user.id, actorType: 'user', ...ctx });
+    return { twoFactorRequired: true, challengeId: challenge.id, ...(env.isProd ? {} : { devCode: challenge.code }) };
+  }
+
+  user.lastLoginAt = new Date();
+  await user.save();
+  recordAudit({ action: 'auth.login', actorId: user.id, actorType: 'user', ...ctx });
+
+  const tokens = await issueSession(user, ctx);
+  return { user: publicUser(user), tokens };
+}
+
+/** Complete a 2FA login by verifying the emailed code, then issue a session. */
+export async function verifyTwoFactor(challengeId: string, code: string, ctx: RequestContext) {
+  const invalid = 'That code is invalid or has expired. Please log in again.';
+  const token = await AuthTokenModel.findOne({ _id: challengeId, type: 'two_factor', usedAt: { $exists: false } }).catch(
+    () => null,
+  );
+  if (!token || token.expiresAt.getTime() < Date.now()) throw AppError.badRequest(invalid);
+  if (token.tokenHash !== hashToken(code.trim())) throw AppError.badRequest('Incorrect code. Please try again.');
+
+  token.usedAt = new Date();
+  await token.save();
+
+  const user = await UserModel.findById(token.userId);
+  if (!user || user.status !== 'active') throw AppError.unauthorized('Account is not active');
 
   user.lastLoginAt = new Date();
   await user.save();

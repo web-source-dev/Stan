@@ -35,6 +35,16 @@ const envSchema = z.object({
   STRIPE_SECRET_KEY: z.string().optional().default(''),
   STRIPE_WEBHOOK_SECRET: z.string().optional().default(''),
 
+  // PayPal (OPTIONAL). Platform-level REST app credentials. Without them the
+  // PayPal option runs in demo mode (instant simulated capture) in non-prod.
+  // Each creator connects by saving their PayPal email (the payee) in Settings.
+  PAYPAL_CLIENT_ID: z.string().optional().default(''),
+  PAYPAL_SECRET: z.string().optional().default(''),
+  PAYPAL_ENV: z.enum(['sandbox', 'live']).default('sandbox'),
+  // Webhook id from the PayPal app (Webhooks). Enables signature verification on
+  // /webhooks/paypal — capture-fallback + refund sync. Optional in dev.
+  PAYPAL_WEBHOOK_ID: z.string().optional().default(''),
+
   // Stanley AI assistant (Anthropic). Optional — without a key the assistant
   // falls back to a deterministic, data-aware responder.
   ANTHROPIC_API_KEY: z.string().optional().default(''),
@@ -96,6 +106,11 @@ export const env = {
   // purchase → fulfilment → access flow is demonstrable without API keys.
   // NEVER active in production — there, missing Stripe correctly blocks sales.
   demoCheckout: !raw.STRIPE_SECRET_KEY && raw.NODE_ENV !== 'production',
+  // PayPal is "configured" once platform REST credentials exist. Without them,
+  // the PayPal option simulates a completed capture in non-production so the
+  // full flow is demonstrable; production requires real credentials.
+  paypalConfigured: Boolean(raw.PAYPAL_CLIENT_ID && raw.PAYPAL_SECRET),
+  paypalDemo: !(raw.PAYPAL_CLIENT_ID && raw.PAYPAL_SECRET) && raw.NODE_ENV !== 'production',
 };
 
 export type Env = typeof env;

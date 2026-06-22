@@ -49,6 +49,8 @@ const sendSchema = z.object({
   bodyText: z.string().min(1).max(20000),
   bodyHtml: z.string().max(50000).optional(),
   segment,
+  scheduledAt: z.string().datetime().optional(),
+  repeat: z.enum(['none', 'weekly', 'monthly']).optional(),
 });
 creator.post(
   '/send',
@@ -57,6 +59,14 @@ creator.post(
   asyncHandler(async (req, res) => {
     const result = await service.sendBroadcast(req.user!.id, req.body);
     res.status(201).json({ broadcast: result });
+  }),
+);
+
+creator.post(
+  '/:id/cancel',
+  validate({ params: z.object({ id: z.string().regex(/^[a-f0-9]{24}$/) }) }),
+  asyncHandler(async (req, res) => {
+    res.json({ broadcast: await service.cancelBroadcast(req.user!.id, String(req.params.id)) });
   }),
 );
 

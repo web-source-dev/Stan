@@ -60,6 +60,22 @@ function unlockedProduct(product: ProductDoc) {
   };
 }
 
+const AUDIO_FORMATS = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'];
+
+/**
+ * Whether a fulfilment asset can be shown inline in the browser. Non-previewable
+ * files (ZIP, .exe, most raw docs) have nothing to render, so they must ALWAYS be
+ * downloadable — preview-only only restricts files that can actually be viewed.
+ */
+function isPreviewable(asset: { resourceType: string; format?: string; filename?: string }): boolean {
+  if (asset.resourceType === 'image' || asset.resourceType === 'video') return true;
+  const fmt = (asset.format || '').toLowerCase();
+  const name = (asset.filename || '').toLowerCase();
+  if (fmt === 'pdf' || name.endsWith('.pdf')) return true;
+  if (AUDIO_FORMATS.includes(fmt) || AUDIO_FORMATS.some((f) => name.endsWith('.' + f))) return true;
+  return false;
+}
+
 function listFiles(product: ProductDoc) {
   return product.assets.map((a) => ({
     id: String(a._id),
@@ -67,6 +83,7 @@ function listFiles(product: ProductDoc) {
     bytes: a.bytes,
     format: a.format,
     resourceType: a.resourceType,
+    previewable: isPreviewable(a),
   }));
 }
 
@@ -199,11 +216,13 @@ export async function mintDownloadUrl(token: string, authHeader: string | undefi
     throw new AppError(503, 'cloudinary_unconfigured', 'Downloads are not configured');
   }
   const { entitlement, product } = await authorize(token, authHeader);
-  if (!product.allowDownload) {
-    throw AppError.forbidden('This product is preview-only — downloads are disabled by the creator.');
-  }
   const asset = product.assets.find((a) => String(a._id) === fileId);
   if (!asset) throw AppError.notFound('File not found');
+  // Preview-only blocks downloads of *previewable* files. Non-previewable files
+  // (ZIP, etc.) have no in-browser view, so they're always downloadable.
+  if (!product.allowDownload && isPreviewable(asset)) {
+    throw AppError.forbidden('This file is preview-only — downloads are disabled by the creator.');
+  }
 
   const url = signedDeliveryUrl(asset.publicId, asset.resourceType, 300);
   entitlement.downloadCount += 1;

@@ -142,6 +142,7 @@ export async function fulfilFreeProduct(input: {
       buyerEmail,
       amountCents: 0,
       currency: product.currency,
+      paymentProvider: 'free',
       status: 'paid',
       fulfilmentStatus: 'pending',
       paidAt: new Date(),
@@ -197,6 +198,9 @@ export async function fulfilCheckoutSession(
     return;
   }
 
+  // Which payment rail settled this — derived from the fulfilment account tag.
+  const paymentProvider = accountId?.startsWith('paypal') ? 'paypal' : 'stripe';
+
   // Course purchases follow the enrollment path, not the product entitlement path.
   if (session.metadata?.itemType === 'course') {
     await fulfilCourseSession(session, creatorId, buyerEmail, accountId);
@@ -240,6 +244,7 @@ export async function fulfilCheckoutSession(
         stripePaymentIntentId:
           typeof session.payment_intent === 'string' ? session.payment_intent : undefined,
         stripeAccountId: accountId,
+        paymentProvider,
         status: 'paid',
         fulfilmentStatus: 'pending',
         paidAt: new Date(),
@@ -317,6 +322,7 @@ async function fulfilCourseSession(
         stripeCheckoutSessionId: session.id,
         stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : undefined,
         stripeAccountId: accountId,
+        paymentProvider: accountId?.startsWith('paypal') ? 'paypal' : 'stripe',
         status: 'paid',
         fulfilmentStatus: 'pending',
         paidAt: new Date(),

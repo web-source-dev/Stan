@@ -1,6 +1,6 @@
 import { Schema, model, Types, type InferSchemaType, type HydratedDocument } from 'mongoose';
 
-export const AUTH_TOKEN_TYPES = ['email_verify', 'password_reset'] as const;
+export const AUTH_TOKEN_TYPES = ['email_verify', 'password_reset', 'two_factor'] as const;
 export type AuthTokenType = (typeof AUTH_TOKEN_TYPES)[number];
 
 /**

@@ -12,6 +12,11 @@ const paymentAccountSchema = new Schema(
     provider: { type: String, enum: ['stripe'], default: 'stripe' },
     stripeAccountId: { type: String, index: true },
 
+    // PayPal: the creator's payee email (funds route here). A non-empty value
+    // means PayPal is connected for this creator.
+    paypalEmail: { type: String, default: '', lowercase: true, trim: true },
+    paypalConnectedAt: { type: Date },
+
     // Mirrored from Stripe account status; refreshed on return from onboarding
     // and via account.updated webhooks.
     chargesEnabled: { type: Boolean, default: false },

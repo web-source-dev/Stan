@@ -4,13 +4,14 @@ import { env } from './config/env';
 import { logger } from './config/logger';
 import { startJobRunner, stopJobRunner } from './lib/jobRunner';
 import { registerBroadcastJobs } from './modules/broadcasts/broadcasts.service';
-import { startBookingMaintenance, stopBookingMaintenance } from './modules/bookings/bookings.service';
+import { startBookingMaintenance, stopBookingMaintenance, registerBookingJobs } from './modules/bookings/bookings.service';
 
 async function main() {
   await connectDb();
 
   // Register module job handlers before the runner starts polling.
   registerBroadcastJobs();
+  registerBookingJobs();
 
   const app = createApp();
   const server = app.listen(env.PORT, () => {

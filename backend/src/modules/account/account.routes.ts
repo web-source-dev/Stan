@@ -8,10 +8,48 @@ import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { RefreshSessionModel } from '../../models/RefreshSession';
 import { AppError } from '../../utils/AppError';
 import { recordAudit } from '../../lib/audit';
+import { env } from '../../config/env';
+import { renderEmail, type EmailTemplate } from '../../lib/email';
 
 // Account-level settings (mounted at /api/account).
 export const accountRouter = Router();
 accountRouter.use(requireAuth);
+
+/* ------------------------------------------------------------------ */
+/* Email template previews (design gallery / test page)                */
+/* ------------------------------------------------------------------ */
+
+// Representative sample data for each template so the gallery shows a realistic
+// rendering. Keep keys aligned with lib/email.ts TemplateData.
+const EMAIL_SAMPLES: { template: EmailTemplate; label: string; data: unknown }[] = [
+  { template: 'email_verification', label: 'Email verification', data: { verifyUrl: 'https://app.example.com/verify-email?token=sample' } },
+  { template: 'login_code', label: 'Login code (2FA)', data: { code: '019922' } },
+  { template: 'password_reset', label: 'Password reset', data: { resetUrl: 'https://app.example.com/reset-password?token=sample' } },
+  { template: 'password_changed', label: 'Password changed', data: {} },
+  { template: 'purchase_receipt', label: 'Purchase receipt', data: { productTitle: 'Creator Notion Starter Pack', amount: '$29.00', fulfilmentUrl: 'https://app.example.com/access/sample', thankYouMessage: 'Thanks so much — enjoy the templates!' } },
+  { template: 'booking_confirmation', label: 'Booking confirmation', data: { title: '30-min Strategy Call', whenText: 'Tue, Jun 24 at 3:00 PM', meetingUrl: 'https://meet.example.com/abc', manageUrl: 'https://app.example.com/booking/sample' } },
+  { template: 'booking_reminder', label: 'Booking reminder', data: { title: '30-min Strategy Call', whenText: 'Tue, Jun 24 at 3:00 PM', startsInText: 'in about 24 hours', meetingUrl: 'https://meet.example.com/abc', manageUrl: 'https://app.example.com/booking/sample' } },
+  { template: 'customer_login_code', label: 'Customer portal code', data: { code: '482913', creatorName: 'Maya Chen' } },
+  { template: 'broadcast', label: 'Broadcast / newsletter', data: { subject: 'New drop: Summer Content Kit 🌞', bodyText: 'Hey!\n\nMy new Summer Content Kit is live — 60 plug-and-play templates to plan a whole season in an afternoon.\n\nGrab it this week for 20% off.', fromName: 'Maya Chen', unsubscribeUrl: 'https://app.example.com/unsubscribe?e=sample' } },
+];
+
+accountRouter.get(
+  '/email-previews',
+  asyncHandler(async (_req, res) => {
+    const templates = EMAIL_SAMPLES.map((s) => {
+      const rendered = renderEmail(s.template, s.data as never);
+      return { key: s.template, label: s.label, subject: rendered.subject, html: rendered.html, text: rendered.text };
+    });
+    res.json({
+      config: {
+        configured: env.emailConfigured,
+        from: env.EMAIL_FROM,
+        sandbox: env.EMAIL_FROM.includes('resend.dev'),
+      },
+      templates,
+    });
+  }),
+);
 
 const PREF_KEYS = [
   'calendarBookings',
@@ -84,6 +122,20 @@ accountRouter.get(
         current: i === 0,
       })),
     });
+  }),
+);
+
+// Revoke a single session by id (sign out one specific device).
+accountRouter.post(
+  '/sessions/:id/revoke',
+  validate({ params: z.object({ id: z.string().regex(/^[a-f0-9]{24}$/) }) }),
+  asyncHandler(async (req, res) => {
+    const result = await RefreshSessionModel.updateOne(
+      { _id: req.params.id, userId: req.user!.id, revokedAt: { $exists: false } },
+      { $set: { revokedAt: new Date() } },
+    );
+    if (result.matchedCount === 0) throw AppError.notFound('Session not found');
+    res.json({ ok: true });
   }),
 );
 

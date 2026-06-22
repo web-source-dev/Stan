@@ -17,6 +17,9 @@ export default async function CheckoutSuccessPage({
 
   const accessHref =
     token && kind === 'course' ? `/learn/${token}` : token && kind === 'product' ? `/access/${token}` : null;
+  // Demo and PayPal capture both fulfil synchronously and pass a token, so show
+  // the direct access link whenever we have one (Stripe is webhook-driven → email).
+  const showAccess = Boolean(accessHref);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-brand-radial px-5">
@@ -27,16 +30,18 @@ export default async function CheckoutSuccessPage({
           </div>
           <h1 className="mt-5 text-2xl font-bold tracking-tight">Payment complete</h1>
 
-          {isDemo ? (
+          {showAccess ? (
             <>
               <p className="mt-2 text-sm leading-relaxed text-neutral-600">
                 {kind === 'booking'
-                  ? 'Your booking is confirmed. In a live store the buyer would also receive a confirmation email.'
-                  : 'Your purchase is ready. In a live store this access link is emailed to the buyer automatically.'}
+                  ? 'Your booking is confirmed — we&apos;ve also emailed you the details.'
+                  : 'Your purchase is ready. We&apos;ve also emailed this access link to you.'}
               </p>
-              <span className="mt-3 inline-flex rounded-full bg-warn-50 px-2.5 py-0.5 text-xs font-semibold text-warn-700">
-                Demo mode · no real charge
-              </span>
+              {isDemo && (
+                <span className="mt-3 inline-flex rounded-full bg-warn-50 px-2.5 py-0.5 text-xs font-semibold text-warn-700">
+                  Demo mode · no real charge
+                </span>
+              )}
               {accessHref && (
                 <ButtonLink href={accessHref} variant="primary" className="mt-6">
                   {kind === 'course' ? 'Start the course →' : 'Access your download →'}

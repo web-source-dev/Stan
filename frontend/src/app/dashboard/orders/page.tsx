@@ -16,13 +16,20 @@ interface Order {
   status: string;
   fulfilmentStatus: string;
   discountCode?: string;
+  paymentProvider?: string;
   product: { title: string; slug: string; kind?: string } | null;
   createdAt: string;
 }
 
-/** Demo apps process a single method; derive a label so the filter has values. */
-function paymentOf(o: Order): 'Card' | 'Free' {
-  return o.amountCents > 0 ? 'Card' : 'Free';
+/** Human label for the rail that settled an order (drives the Payment filter). */
+function paymentOf(o: Order): string {
+  switch (o.paymentProvider) {
+    case 'paypal': return 'PayPal';
+    case 'free': return 'Free';
+    case 'manual': return 'Manual';
+    case 'stripe': return 'Card';
+    default: return o.amountCents > 0 ? 'Card' : 'Free';
+  }
 }
 
 function fmtDate(iso: string) {
@@ -245,6 +252,10 @@ function IncomeContent({ initialOrders }: { initialOrders?: Order[] }) {
     () => Array.from(new Set((orders ?? []).map((o) => o.fulfilmentStatus).filter(Boolean))).sort(),
     [orders],
   );
+  const paymentOptions = useMemo(
+    () => Array.from(new Set((orders ?? []).map(paymentOf))).sort(),
+    [orders],
+  );
 
   const filtered = useMemo(() => {
     if (!orders) return [];
@@ -393,8 +404,7 @@ function IncomeContent({ initialOrders }: { initialOrders?: Order[] }) {
             {active.includes('payment') && (
               <Select label="Payment method" value={filters.payment} onChange={(e) => setFilters({ ...filters, payment: e.target.value })}>
                 <option value="">Any method</option>
-                <option value="Card">Card</option>
-                <option value="Free">Free</option>
+                {paymentOptions.map((m) => <option key={m} value={m}>{m}</option>)}
               </Select>
             )}
           </div>
@@ -425,6 +435,7 @@ function IncomeContent({ initialOrders }: { initialOrders?: Order[] }) {
                 <th className="pb-2 pr-4">Date</th>
                 <th className="pb-2 pr-4">Email</th>
                 <th className="pb-2 pr-4">Product</th>
+                <th className="pb-2 pr-4">Method</th>
                 <th className="pb-2 text-right">Amount</th>
               </tr>
             </thead>
@@ -438,6 +449,16 @@ function IncomeContent({ initialOrders }: { initialOrders?: Order[] }) {
                       <span className="inline-flex items-center gap-2">
                         {o.product?.title ?? '—'}
                         {o.product?.kind && o.product.kind !== 'product' && <Badge tone="neutral">{o.product.kind}</Badge>}
+                      </span>
+                    </td>
+                    <td className="py-3 pr-4">
+                      <span className={cn(
+                        'inline-flex rounded-full px-2 py-0.5 text-xs font-semibold',
+                        paymentOf(o) === 'PayPal' ? 'bg-[#e8f3ff] text-[#003087]'
+                          : paymentOf(o) === 'Free' ? 'bg-neutral-100 text-neutral-500'
+                          : 'bg-brand-50 text-brand-600',
+                      )}>
+                        {paymentOf(o)}
                       </span>
                     </td>
                     <td className="whitespace-nowrap py-3 text-right font-semibold text-[#1a1c3a]">

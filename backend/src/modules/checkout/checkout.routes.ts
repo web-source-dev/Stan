@@ -3,7 +3,16 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { publicWriteLimiter } from '../../middleware/rateLimit';
-import { createCheckoutSession, createCourseCheckoutSession, claimFreeProduct, previewCheckoutPricing } from './checkout.service';
+import {
+  createCheckoutSession,
+  createCourseCheckoutSession,
+  claimFreeProduct,
+  previewCheckoutPricing,
+  createPayPalProductCheckout,
+  createPayPalCourseCheckout,
+  capturePayPalOrder,
+  getPaymentMethods,
+} from './checkout.service';
 
 export const checkoutRouter = Router();
 
@@ -51,6 +60,13 @@ checkoutRouter.post(
   }),
 );
 
+checkoutRouter.get(
+  '/payment-methods/:username',
+  asyncHandler(async (req, res) => {
+    res.json(await getPaymentMethods(String(req.params.username)));
+  }),
+);
+
 checkoutRouter.post(
   '/preview',
   publicWriteLimiter,
@@ -68,5 +84,34 @@ checkoutRouter.post(
   asyncHandler(async (req, res) => {
     const result = await createCourseCheckoutSession(req.body);
     res.json(result);
+  }),
+);
+
+/* ---- PayPal ---- */
+
+checkoutRouter.post(
+  '/paypal/session',
+  publicWriteLimiter,
+  validate({ body: sessionSchema }),
+  asyncHandler(async (req, res) => {
+    res.json(await createPayPalProductCheckout(req.body));
+  }),
+);
+
+checkoutRouter.post(
+  '/paypal/course-session',
+  publicWriteLimiter,
+  validate({ body: sessionSchema }),
+  asyncHandler(async (req, res) => {
+    res.json(await createPayPalCourseCheckout(req.body));
+  }),
+);
+
+checkoutRouter.post(
+  '/paypal/capture',
+  publicWriteLimiter,
+  validate({ body: z.object({ orderId: z.string().min(1).max(64) }) }),
+  asyncHandler(async (req, res) => {
+    res.json(await capturePayPalOrder(req.body.orderId));
   }),
 );

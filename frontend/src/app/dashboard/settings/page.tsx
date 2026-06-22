@@ -14,6 +14,7 @@ import {
   IconDownload, IconCheckCircle, IconChevronDown,
 } from '@/components/icons';
 import { formatPrice, type CreatorProfile } from '@/lib/types';
+import { PaymentDetails, type SavedCard } from '@/components/PaymentDetails';
 import { cn } from '@/lib/cn';
 
 type TabKey = 'profile' | 'integrations' | 'billing' | 'payments' | 'notifications' | 'security';
@@ -429,7 +430,7 @@ interface PlanFeatures {
   stanleyAI: boolean;
   removeBranding: boolean;
 }
-interface Sub { plan: string; tier: string; nominalTier: string; status: string; label: string; priceCents: number; interval: string; stanleyAddon: boolean; trialEndsAt?: string; features: PlanFeatures; }
+interface Sub { plan: string; tier: string; nominalTier: string; status: string; label: string; priceCents: number; interval: string; stanleyAddon: boolean; trialEndsAt?: string; currentPeriodEnd?: string; cancelAtPeriodEnd?: boolean; features: PlanFeatures; paymentMethod?: SavedCard | null; }
 interface PlanOpt { key: string; tier: string; cents: number; interval: string; label: string; features: PlanFeatures; }
 
 // Display rows for the comparison cards. `val` returns true/false (✓/✗) or text.
@@ -538,11 +539,23 @@ function PlanPicker({ sub, plans, onSelect, busyKey }: { sub: Sub; plans: PlanOp
   );
 }
 
+interface InvoiceRow {
+  id: string;
+  number: string;
+  description: string;
+  amountCents: number;
+  currency: string;
+  status: string;
+  paidAt: string;
+}
+
 function BillingTab({ initialSub }: { initialSub?: Sub }) {
   const { authedRequest } = useAuth();
   const [sub, setSub] = useState<Sub | null>(initialSub ?? null);
   const [plans, setPlans] = useState<PlanOpt[]>([]);
+  const [invoices, setInvoices] = useState<InvoiceRow[] | null>(null);
   const [busy, setBusy] = useState('');
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
   // Checkout-confirmation flow for switching plans.
   const [pending, setPending] = useState<PlanOpt | null>(null);
   const [step, setStep] = useState<'confirm' | 'processing' | 'done'>('confirm');
@@ -552,7 +565,11 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
     setSub(res.subscription);
     setPlans(res.plans ?? []);
   }, [authedRequest]);
-  useEffect(() => { void load(); }, [load]);
+  const loadInvoices = useCallback(async () => {
+    const res = await authedRequest<{ invoices: InvoiceRow[] }>('/api/subscription/invoices');
+    setInvoices(res.invoices);
+  }, [authedRequest]);
+  useEffect(() => { void load(); void loadInvoices(); }, [load, loadInvoices]);
 
   function requestSelect(plan: string) {
     const opt = plans.find((p) => p.key === plan);
@@ -569,6 +586,7 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
       const res = await authedRequest<{ subscription: Sub }>('/api/subscription/select', { method: 'POST', body: { plan: pending.key } });
       setSub(res.subscription);
       emitPlanChanged();
+      void loadInvoices(); // a paid plan change just generated a new invoice
       setStep('done');
     } catch {
       setPending(null);
@@ -580,11 +598,23 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
     try {
       const res = await authedRequest<{ subscription: Sub }>('/api/subscription/cancel', { method: 'POST' });
       setSub(res.subscription);
+      setConfirmingCancel(false);
+    } finally { setBusy(''); }
+  }
+
+  async function resume() {
+    setBusy('resume');
+    try {
+      const res = await authedRequest<{ subscription: Sub }>('/api/subscription/resume', { method: 'POST' });
+      setSub(res.subscription);
+      emitPlanChanged();
     } finally { setBusy(''); }
   }
 
   if (!sub) return <div className={CARD}><Skeleton className="h-48 w-full" /></div>;
-  const trialDate = sub.trialEndsAt ? new Date(sub.trialEndsAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : null;
+  const fmtLong = (iso?: string) => (iso ? new Date(iso).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : null);
+  const trialDate = fmtLong(sub.trialEndsAt);
+  const periodDate = fmtLong(sub.currentPeriodEnd);
 
   return (
     <div className="space-y-6">
@@ -652,59 +682,92 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
             </div>
             <div className="mt-2 text-sm capitalize text-neutral-500">Billed {sub.interval === 'year' ? 'Yearly' : 'Monthly'}</div>
             {sub.status === 'trialing' && trialDate && <div className="mt-1 text-sm text-neutral-500">Your trial expires on {trialDate}</div>}
-          </div>
-          <div className="mt-4 flex flex-wrap gap-3">
-            {sub.status !== 'canceled' && (
-              <button onClick={cancel} disabled={busy === 'cancel'} className="rounded-full border border-danger-300 bg-white px-5 py-2.5 text-sm font-bold text-danger-600 transition hover:bg-danger-50 disabled:opacity-50">
-                {busy === 'cancel' ? 'Cancelling…' : 'Cancel Subscription'}
-              </button>
+            {sub.status === 'active' && !sub.cancelAtPeriodEnd && periodDate && (
+              <div className="mt-1 text-sm text-neutral-500">Renews on {periodDate}</div>
             )}
-            <Link href="/dashboard/settings?tab=billing" className="rounded-full border border-brand-400 bg-white px-5 py-2.5 text-sm font-bold text-brand-600 transition hover:bg-brand-50">Manage Stanley IG</Link>
+          </div>
+
+          {/* Scheduled-cancel banner */}
+          {sub.cancelAtPeriodEnd && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              Your <strong>{sub.label}</strong> plan stays active until <strong>{periodDate}</strong>, then switches to Free. It won&apos;t renew and you won&apos;t be charged again — no refund for the current period.
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-wrap gap-3">
+            {sub.cancelAtPeriodEnd ? (
+              <button onClick={resume} disabled={busy === 'resume'} className="rounded-full bg-brand-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-brand-700 disabled:opacity-50">
+                {busy === 'resume' ? 'Resuming…' : 'Resume subscription'}
+              </button>
+            ) : sub.status !== 'canceled' && sub.tier !== 'free' ? (
+              !confirmingCancel ? (
+                <button onClick={() => setConfirmingCancel(true)} className="rounded-full border border-danger-300 bg-white px-5 py-2.5 text-sm font-bold text-danger-600 transition hover:bg-danger-50">
+                  Cancel Subscription
+                </button>
+              ) : (
+                <div className="w-full rounded-xl border border-line bg-white p-4">
+                  <p className="text-sm text-neutral-600">
+                    You&apos;ll keep <strong>{sub.label}</strong>{periodDate ? <> until <strong>{periodDate}</strong></> : ''}, then move to Free. No further charges and no refund for the current period.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <button onClick={cancel} disabled={busy === 'cancel'} className="rounded-full bg-danger-600 px-5 py-2 text-sm font-bold text-white transition hover:bg-danger-700 disabled:opacity-50">
+                      {busy === 'cancel' ? 'Cancelling…' : 'Confirm cancellation'}
+                    </button>
+                    <button onClick={() => setConfirmingCancel(false)} className="rounded-full px-4 py-2 text-sm font-semibold text-neutral-500 hover:text-ink">Keep my plan</button>
+                  </div>
+                </div>
+              )
+            ) : null}
+            {!confirmingCancel && !sub.cancelAtPeriodEnd && (
+              <Link href="/dashboard/settings?tab=billing" className="rounded-full border border-brand-400 bg-white px-5 py-2.5 text-sm font-bold text-brand-600 transition hover:bg-brand-50">Manage Stanley IG</Link>
+            )}
           </div>
         </div>
 
         {/* Payment details */}
-        <div>
-          <h2 className="mb-4 text-lg font-bold tracking-tight text-[#1a1c3a]">Payment Details</h2>
-          <div className="space-y-4">
-            <div className="relative">
-              <input className={cn(INPUT, 'pr-12')} placeholder="Card number" />
-              <IconCard size={20} className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <input className={INPUT} placeholder="Expiration date" />
-              <input className={INPUT} placeholder="Security code" />
-            </div>
-            <PrimaryBtn>Update</PrimaryBtn>
-          </div>
-        </div>
+        <PaymentDetails card={sub.paymentMethod ?? null} onChange={(s) => setSub(s as Sub)} />
         </div>
       </div>
 
       {/* Invoices */}
       <div className={CARD}>
         <h2 className="text-lg font-bold tracking-tight text-[#1a1c3a]">Invoices</h2>
+        <p className="mt-1 text-sm text-neutral-500">Receipts for your Stan subscription. View or download (Save as PDF) any invoice.</p>
         <div className="mt-5 overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-line text-left text-sm font-bold text-[#1a1c3a]">
-                <th className="px-2 pb-3">Date</th>
-                <th className="px-2 pb-3">Amount</th>
-                <th className="px-2 pb-3">Status</th>
-                <th className="px-2 pb-3" />
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="border-b border-line/70 text-[15px] last:border-0">
-                <td className="px-2 py-4 text-brand-600">{trialDate ?? new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</td>
-                <td className="px-2 py-4 text-neutral-500">{formatPrice(0)}</td>
-                <td className="px-2 py-4"><span className="rounded-md bg-success-50 px-2 py-0.5 text-xs font-semibold text-success-700">Paid</span></td>
-                <td className="px-2 py-4 text-right">
-                  <button className="inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-white px-4 py-1.5 text-sm font-semibold text-brand-600 hover:bg-surface-muted"><IconDownload size={15} /> Download</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          {invoices === null ? (
+            <Skeleton className="h-24 w-full" />
+          ) : invoices.length === 0 ? (
+            <p className="py-8 text-center text-sm text-neutral-500">No invoices yet — they appear here after your first paid subscription charge.</p>
+          ) : (
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-line text-left text-sm font-bold text-[#1a1c3a]">
+                  <th className="px-2 pb-3">Invoice</th>
+                  <th className="px-2 pb-3">Amount</th>
+                  <th className="px-2 pb-3">Status</th>
+                  <th className="px-2 pb-3" />
+                </tr>
+              </thead>
+              <tbody>
+                {invoices.map((inv) => (
+                  <tr key={inv.id} className="border-b border-line/70 text-[15px] last:border-0">
+                    <td className="px-2 py-4">
+                      <div className="font-semibold text-[#1a1c3a]">{inv.description}</div>
+                      <div className="text-xs text-neutral-400">{inv.number} · {new Date(inv.paidAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</div>
+                    </td>
+                    <td className="px-2 py-4 text-neutral-600">{formatPrice(inv.amountCents)}</td>
+                    <td className="px-2 py-4"><span className="rounded-md bg-success-50 px-2 py-0.5 text-xs font-semibold capitalize text-success-700">{inv.status}</span></td>
+                    <td className="px-2 py-4 text-right">
+                      <div className="inline-flex items-center gap-2">
+                        <a href={`/dashboard/billing/invoice/${inv.id}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-white px-4 py-1.5 text-sm font-semibold text-ink hover:bg-surface-muted"><IconEye size={15} /> View</a>
+                        <a href={`/dashboard/billing/invoice/${inv.id}?download=1`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-white px-4 py-1.5 text-sm font-semibold text-brand-600 hover:bg-surface-muted"><IconDownload size={15} /> Download</a>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
     </div>
@@ -716,7 +779,8 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
 /* ------------------------------------------------------------------ */
 
 interface ConnectStatus { chargesEnabled?: boolean; payoutsEnabled?: boolean; detailsSubmitted?: boolean; }
-const LANGUAGES = ['English', 'Spanish', 'French', 'German', 'Portuguese', 'Italian', 'Dutch'];
+
+interface PayPalStatus { connected: boolean; email: string; configured: boolean; demo: boolean }
 
 function PaymentsTab() {
   const { authedRequest } = useAuth();
@@ -724,10 +788,17 @@ function PaymentsTab() {
   const [busy, setBusy] = useState(false);
   const [gdpr, setGdpr] = useState(true);
   const [terms, setTerms] = useState(false);
-  const [lang, setLang] = useState('English');
+
+  const [pp, setPp] = useState<PayPalStatus | null>(null);
+  const [ppEmail, setPpEmail] = useState('');
+  const [ppBusy, setPpBusy] = useState(false);
+  const [ppErr, setPpErr] = useState('');
 
   useEffect(() => {
     authedRequest<{ account: ConnectStatus }>('/api/payments/connect/status').then((r) => setStatus(r.account)).catch(() => {});
+    authedRequest<{ paypal: PayPalStatus }>('/api/payments/connect/paypal/status')
+      .then((r) => { setPp(r.paypal); setPpEmail(r.paypal.email); })
+      .catch(() => {});
   }, [authedRequest]);
 
   async function register() {
@@ -736,6 +807,27 @@ function PaymentsTab() {
       const res = await authedRequest<{ url: string }>('/api/payments/connect/onboard', { method: 'POST' });
       window.location.href = res.url;
     } catch { setBusy(false); }
+  }
+
+  async function connectPayPal() {
+    setPpBusy(true); setPpErr('');
+    try {
+      const r = await authedRequest<{ paypalEmail: string }>('/api/payments/connect/paypal/connect', { method: 'POST', body: { email: ppEmail } });
+      setPp((p) => (p ? { ...p, connected: true, email: r.paypalEmail } : p));
+    } catch (e) {
+      setPpErr(e instanceof ApiException ? e.message : 'Could not connect PayPal');
+    } finally { setPpBusy(false); }
+  }
+
+  async function disconnectPayPal() {
+    setPpBusy(true); setPpErr('');
+    try {
+      await authedRequest('/api/payments/connect/paypal/disconnect', { method: 'POST' });
+      setPp((p) => (p ? { ...p, connected: false, email: '' } : p));
+      setPpEmail('');
+    } catch (e) {
+      setPpErr(e instanceof ApiException ? e.message : 'Could not disconnect PayPal');
+    } finally { setPpBusy(false); }
   }
 
   const connected = status?.chargesEnabled;
@@ -756,8 +848,45 @@ function PaymentsTab() {
             </button>
           )}
         </div>
-        <div className="mt-3 flex justify-end">
-          <button className="text-sm font-bold text-brand-600 hover:text-brand-700">+ Add PayPal</button>
+        {/* PayPal */}
+        <div className="mt-3 rounded-2xl bg-surface-subtle px-6 py-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="text-xl font-extrabold italic tracking-tight">
+              <span className="text-[#003087]">Pay</span><span className="text-[#009cde]">Pal</span>
+            </span>
+            {pp?.connected ? (
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-success-50 px-4 py-2 text-sm font-bold text-success-700"><IconCheckCircle size={16} /> Connected</span>
+                <button onClick={disconnectPayPal} disabled={ppBusy} className="rounded-full border border-line-strong px-4 py-2 text-sm font-bold text-neutral-600 transition hover:bg-white disabled:opacity-50">Disconnect</button>
+              </div>
+            ) : (
+              <div className="flex w-full max-w-sm items-center gap-2 sm:w-auto">
+                <input
+                  type="email"
+                  placeholder="your-paypal@email.com"
+                  value={ppEmail}
+                  onChange={(e) => setPpEmail(e.target.value)}
+                  className={cn(INPUT, 'flex-1')}
+                />
+                <button onClick={connectPayPal} disabled={ppBusy || !ppEmail.trim()} className="shrink-0 rounded-full bg-brand-600 px-6 py-2.5 text-sm font-bold text-white transition hover:bg-brand-700 disabled:opacity-50">
+                  {ppBusy ? '…' : 'Connect'}
+                </button>
+              </div>
+            )}
+          </div>
+          {pp?.connected && (
+            <p className="mt-2 text-sm text-neutral-500">PayPal payments are paid out to <span className="font-semibold text-[#1a1c3a]">{pp.email}</span>.</p>
+          )}
+          {pp && !pp.connected && (
+            <p className="mt-2 text-sm text-neutral-500">Enter the PayPal email where buyers&apos; payments should be sent.</p>
+          )}
+          {pp?.demo && (
+            <p className="mt-2 text-xs font-medium text-amber-700">Demo mode: PayPal isn&apos;t configured on this platform, so PayPal checkout is simulated — no real payment is taken.</p>
+          )}
+          {pp && !pp.configured && !pp.demo && (
+            <p className="mt-2 text-xs font-medium text-amber-700">PayPal isn&apos;t enabled on this platform yet. Connecting an email has no effect until it is.</p>
+          )}
+          {ppErr && <p className="mt-2 text-xs font-medium text-red-600">{ppErr}</p>}
         </div>
       </div>
 
@@ -774,16 +903,6 @@ function PaymentsTab() {
           <div>
             <div className="font-bold text-[#1a1c3a]">Enable Terms &amp; Conditions</div>
             <p className="mt-1 text-sm leading-relaxed text-neutral-500">When enabled, customers are required to agree to the terms and conditions before the sale can be completed. The agreement checkbox will appear on each checkout page.</p>
-          </div>
-        </div>
-        <div>
-          <div className="font-bold text-[#1a1c3a]">Change Store Checkout Language</div>
-          <p className="mt-1 text-sm text-neutral-500">Set the language customers will see on the checkout page from your storefront.</p>
-          <div className="relative mt-3 max-w-xs">
-            <select value={lang} onChange={(e) => setLang(e.target.value)} className={cn(INPUT, 'cursor-pointer appearance-none pr-10')}>
-              {LANGUAGES.map((l) => <option key={l}>{l}</option>)}
-            </select>
-            <IconChevronDown size={18} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400" />
           </div>
         </div>
       </div>
@@ -878,6 +997,10 @@ function SecurityTab() {
     await authedRequest('/api/account/sessions/revoke-others', { method: 'POST' }).catch(() => {});
     await load();
   }
+  async function revokeOne(id: string) {
+    await authedRequest(`/api/account/sessions/${id}/revoke`, { method: 'POST' }).catch(() => {});
+    await load();
+  }
   async function deleteAccount() {
     await authedRequest('/api/account/delete', { method: 'POST' }).catch(() => {});
     await logout();
@@ -921,7 +1044,15 @@ function SecurityTab() {
                     <td className="px-2 py-4 text-[#1a1c3a]">{deviceLabel(s.userAgent)}</td>
                     <td className="px-2 py-4 text-neutral-500">{s.ip || '—'}</td>
                     <td className="whitespace-nowrap px-2 py-4 text-neutral-500">{new Date(s.createdAt).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}</td>
-                    <td className="px-2 py-4 text-right">{s.current && <span className="rounded-md bg-brand-50 px-2.5 py-1 text-xs font-bold text-brand-600">Current Session</span>}</td>
+                    <td className="px-2 py-4 text-right">
+                      {s.current ? (
+                        <span className="rounded-md bg-brand-50 px-2.5 py-1 text-xs font-bold text-brand-600">Current Session</span>
+                      ) : (
+                        <button onClick={() => revokeOne(s.id)} className="rounded-full border border-line-strong px-3 py-1.5 text-xs font-bold text-neutral-600 transition hover:border-danger-300 hover:text-danger-600">
+                          Sign out
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

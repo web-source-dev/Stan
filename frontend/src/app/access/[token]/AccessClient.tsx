@@ -21,6 +21,7 @@ interface FileItem {
   bytes: number;
   format: string;
   resourceType?: 'image' | 'video' | 'raw';
+  previewable?: boolean;
 }
 
 type PreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'other';
@@ -374,38 +375,46 @@ export function AccessClient({ token }: { token: string }) {
                     <p className="mt-2 text-sm text-neutral-500">No files are attached to this product.</p>
                   ) : (
                     <ul className="mt-3 space-y-2">
-                      {files.map((f) => (
-                        <li
-                          key={f.id}
-                          className="flex items-center gap-3 rounded-xl border border-line bg-white px-4 py-3 text-sm shadow-xs"
-                        >
-                          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-brand-50 text-brand-600">
-                            <IconEye size={18} />
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate font-medium">{f.filename}</span>
-                            <span className="text-xs text-neutral-400">
-                              {[f.format?.toUpperCase(), prettyBytes(f.bytes)].filter(Boolean).join(' · ')}
-                            </span>
-                          </span>
-                          <button
-                            onClick={() => openPreview(f)}
-                            disabled={previewBusyId === f.id}
-                            className="shrink-0 rounded-full border border-line px-3.5 py-1.5 text-xs font-semibold text-ink transition hover:border-brand-300 hover:text-brand-600 disabled:opacity-60"
+                      {files.map((f) => {
+                        // ZIPs and other non-viewable files have no in-browser preview,
+                        // so they're always downloadable even in preview-only mode.
+                        const canPreview = f.previewable !== false;
+                        const canDownload = Boolean(product.allowDownload) || !canPreview;
+                        return (
+                          <li
+                            key={f.id}
+                            className="flex items-center gap-3 rounded-xl border border-line bg-white px-4 py-3 text-sm shadow-xs"
                           >
-                            {previewBusyId === f.id ? 'Opening…' : 'Preview'}
-                          </button>
-                          {product.allowDownload && (
-                            <button
-                              onClick={() => download(f)}
-                              disabled={downloadingId === f.id}
-                              className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-ink px-3.5 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
-                            >
-                              <IconDownload size={13} /> {downloadingId === f.id ? 'Preparing…' : 'Download'}
-                            </button>
-                          )}
-                        </li>
-                      ))}
+                            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-brand-50 text-brand-600">
+                              {canPreview ? <IconEye size={18} /> : <IconDownload size={18} />}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate font-medium">{f.filename}</span>
+                              <span className="text-xs text-neutral-400">
+                                {[f.format?.toUpperCase(), prettyBytes(f.bytes)].filter(Boolean).join(' · ')}
+                              </span>
+                            </span>
+                            {canPreview && (
+                              <button
+                                onClick={() => openPreview(f)}
+                                disabled={previewBusyId === f.id}
+                                className="shrink-0 rounded-full border border-line px-3.5 py-1.5 text-xs font-semibold text-ink transition hover:border-brand-300 hover:text-brand-600 disabled:opacity-60"
+                              >
+                                {previewBusyId === f.id ? 'Opening…' : 'Preview'}
+                              </button>
+                            )}
+                            {canDownload && (
+                              <button
+                                onClick={() => download(f)}
+                                disabled={downloadingId === f.id}
+                                className="inline-flex shrink-0 items-center gap-1.5 rounded-full bg-ink px-3.5 py-1.5 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
+                              >
+                                <IconDownload size={13} /> {downloadingId === f.id ? 'Preparing…' : 'Download'}
+                              </button>
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
                 </div>
@@ -414,9 +423,7 @@ export function AccessClient({ token }: { token: string }) {
               {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
 
               <p className="mt-6 text-xs text-neutral-400">
-                {product.allowDownload
-                  ? 'Bookmark this page — it stays unlocked on this device. Links are personal to your email.'
-                  : 'These files are preview-only. Bookmark this page to view them anytime on this device.'}
+                Bookmark this page — it stays unlocked on this device, and your access links are personal to your email.
               </p>
             </>
           )}

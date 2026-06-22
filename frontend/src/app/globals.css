@@ -1139,3 +1139,43 @@
     @apply xl:sticky xl:top-2 xl:pl-8;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Google Website Translate — hide ALL of Google's injected chrome.    */
+/* The engine is driven by our own custom dropdown (LanguageSwitcher). */
+/* ------------------------------------------------------------------ */
+.goog-te-banner-frame,
+.goog-te-banner-frame.skiptranslate,
+iframe.goog-te-banner-frame,
+.skiptranslate > iframe {
+  display: none !important;
+  visibility: hidden !important;
+  height: 0 !important;
+}
+/* Google pushes the page down with an inline body { top: 40px } — undo it. */
+body,
+html.translated-ltr body,
+html.translated-rtl body {
+  top: 0 !important;
+  position: static !important;
+}
+/* Keep the engine container itself off-screen (we render our own UI). */
+#google_translate_element {
+  position: absolute !important;
+  left: -9999px !important;
+  top: -9999px !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden !important;
+}
+/* Hover tooltip + balloon + highlight that Google injects. */
+#goog-gt-tt,
+.goog-te-balloon-frame,
+.goog-tooltip,
+.goog-tooltip:hover {
+  display: none !important;
+}
+.goog-text-highlight {
+  background: none !important;
+  box-shadow: none !important;
+}

@@ -6,7 +6,8 @@ import { BookingTypeModel, BookingModel, BlockedTimeModel, type BookingTypeDoc, 
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { OrderModel } from '../../models/Order';
 import { uniqueSlug } from '../../lib/slug';
-import { enqueueEmail } from '../../lib/jobs';
+import { enqueueEmail, enqueueJob } from '../../lib/jobs';
+import { registerJobHandler } from '../../lib/jobRunner';
 import { recordAudit } from '../../lib/audit';
 import { canAcceptPayments } from '../payments/connect.service';
 import { upsertCustomerLead } from '../leads/leads.service';
@@ -109,20 +110,29 @@ export async function setBookingTypeStatus(creatorId: string, id: string, status
 }
 
 export async function listBookings(creatorId: string) {
-  const bookings = await BookingModel.find({ creatorId, status: { $ne: 'cancelled' } })
+  // Include every status (cancelled too) so the dashboard can filter by it.
+  const bookings = await BookingModel.find({ creatorId })
     .sort({ startAt: 1 })
-    .populate('bookingTypeId', 'title')
-    .limit(200);
-  return bookings.map((b) => ({
-    id: b.id,
-    title: (b.bookingTypeId as unknown as { title?: string })?.title ?? '',
-    buyerEmail: b.buyerEmail,
-    buyerName: b.buyerName,
-    startAt: b.startAt,
-    endAt: b.endAt,
-    status: b.status,
-    meetingUrl: b.meetingUrl,
-  }));
+    .populate('bookingTypeId', 'title durationMin')
+    .limit(500);
+  return bookings.map((b) => {
+    const bt = b.bookingTypeId as unknown as { title?: string; durationMin?: number } | null;
+    return {
+      id: b.id,
+      title: bt?.title ?? 'Session',
+      durationMin: bt?.durationMin ?? Math.round((b.endAt.getTime() - b.startAt.getTime()) / 60000),
+      buyerEmail: b.buyerEmail,
+      buyerName: b.buyerName,
+      startAt: b.startAt,
+      endAt: b.endAt,
+      timezone: b.get('timezone') || 'UTC',
+      status: b.status,
+      meetingUrl: b.meetingUrl,
+      manageToken: b.manageToken,
+      intakeAnswers: (b.intakeAnswers ?? []).map((a) => ({ question: a.question, answer: a.answer })),
+      createdAt: b.get('createdAt'),
+    };
+  });
 }
 
 // ---- Blocked time (creator-wide calendar holds) ----
@@ -207,6 +217,7 @@ export async function createBooking(input: {
   name?: string;
   startIso: string;
   intakeAnswers?: { question: string; answer: string }[];
+  provider?: 'stripe' | 'paypal';
 }) {
   const { bt } = await publishedType(input.username, input.slug);
   const creatorId = String(bt.creatorId);
@@ -274,6 +285,7 @@ export async function createBooking(input: {
     currency: bt.currency,
     email: input.email,
     username: input.username,
+    provider: input.provider ?? 'stripe',
   });
   booking.stripeCheckoutSessionId = checkout.sessionId;
   await booking.save();
@@ -287,6 +299,51 @@ export async function sendBookingConfirmation(booking: BookingDoc, bt: BookingTy
     meetingUrl: booking.meetingUrl || bt.meetingUrl || undefined,
     manageUrl: `${env.APP_URL}/booking/${booking.manageToken}`,
   });
+  await scheduleBookingReminder(booking);
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Schedule a "your booking is coming up" reminder. Fires 24h before the start;
+ * if the booking is sooner than that, falls back to 1h before. Skipped entirely
+ * if even that is already in the past. Idempotent per booking via dedupeKey.
+ */
+export async function scheduleBookingReminder(booking: BookingDoc): Promise<void> {
+  const start = booking.startAt.getTime();
+  const now = Date.now();
+  let runAt: Date | null = null;
+  if (start - DAY_MS > now) runAt = new Date(start - DAY_MS);
+  else if (start - HOUR_MS > now) runAt = new Date(start - HOUR_MS);
+  if (!runAt) return;
+  await enqueueJob(
+    'booking_reminder',
+    { bookingId: booking.id },
+    { runAt, dedupeKey: `booking_reminder:${booking.id}` },
+  ).catch(() => {});
+}
+
+/** Job handler: send the reminder if the booking is still confirmed + upcoming. */
+async function processBookingReminder(payload: Record<string, unknown>): Promise<void> {
+  const booking = await BookingModel.findById(String(payload.bookingId ?? ''));
+  if (!booking || booking.status !== 'confirmed' || booking.startAt.getTime() <= Date.now()) return;
+  const bt = await BookingTypeModel.findById(booking.bookingTypeId);
+  if (!bt) return;
+  const mins = Math.round((booking.startAt.getTime() - Date.now()) / 60000);
+  const startsInText = mins >= 90 ? `in about ${Math.round(mins / 60)} hours` : mins >= 45 ? 'in about an hour' : `in ${Math.max(1, mins)} minutes`;
+  await enqueueEmail(booking.buyerEmail, 'booking_reminder', {
+    title: bt.title,
+    whenText: whenText(booking.startAt, booking.timezone),
+    startsInText,
+    meetingUrl: booking.meetingUrl || bt.meetingUrl || undefined,
+    manageUrl: `${env.APP_URL}/booking/${booking.manageToken}`,
+  });
+}
+
+/** Register booking job handlers with the runner (called at boot). */
+export function registerBookingJobs(): void {
+  registerJobHandler('booking_reminder', processBookingReminder);
 }
 
 /** Confirm a paid booking from its checkout session (called by fulfilment). */
@@ -311,6 +368,7 @@ export async function confirmBookingFromSession(session: Stripe.Checkout.Session
       stripeCheckoutSessionId: session.id,
       stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : undefined,
       stripeAccountId: accountId,
+      paymentProvider: accountId?.startsWith('paypal') ? 'paypal' : 'stripe',
       status: 'paid',
       fulfilmentStatus: 'fulfilled',
       paidAt: new Date(),

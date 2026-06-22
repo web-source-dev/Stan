@@ -114,7 +114,7 @@ function DownloadToggle({ value, onChange }: { value: boolean; onChange: (v: boo
         <span className="block text-xs text-neutral-500">
           {value
             ? 'Buyers can preview and download these files after purchase.'
-            : 'Preview-only — buyers can view the files after purchase but not download them.'}
+            : 'Preview-only for viewable files (PDF, images, video, audio). Files that can’t be previewed — like ZIPs — stay downloadable so buyers can always access them.'}
         </span>
       </span>
     </button>

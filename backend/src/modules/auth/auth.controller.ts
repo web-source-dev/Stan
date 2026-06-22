@@ -16,7 +16,19 @@ export async function signup(req: Request, res: Response) {
 
 export async function login(req: Request, res: Response) {
   const { email, password } = req.body;
-  const { user, tokens } = await authService.login(email, password, ctx(req));
+  const result = await authService.login(email, password, ctx(req));
+  // Two-factor enabled → no session yet; the client must verify the emailed code.
+  if ('twoFactorRequired' in result) {
+    res.json(result);
+    return;
+  }
+  setRefreshCookie(res, result.tokens.refreshToken);
+  res.json({ user: result.user, accessToken: result.tokens.accessToken });
+}
+
+export async function verifyTwoFactor(req: Request, res: Response) {
+  const { challengeId, code } = req.body;
+  const { user, tokens } = await authService.verifyTwoFactor(challengeId, code, ctx(req));
   setRefreshCookie(res, tokens.refreshToken);
   res.json({ user, accessToken: tokens.accessToken });
 }

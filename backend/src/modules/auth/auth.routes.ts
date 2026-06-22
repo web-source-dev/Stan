@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import * as ctrl from './auth.controller';
 import { validate } from '../../middleware/validate';
 import { asyncHandler } from '../../utils/asyncHandler';
@@ -21,6 +22,12 @@ export const authRouter = Router();
 // under the global per-IP limiter applied app-wide.
 authRouter.post('/signup', authLimiter, validate({ body: signupSchema }), asyncHandler(ctrl.signup));
 authRouter.post('/login', authLimiter, validate({ body: loginSchema }), asyncHandler(ctrl.login));
+authRouter.post(
+  '/login/verify-2fa',
+  authLimiter,
+  validate({ body: z.object({ challengeId: z.string().min(1).max(64), code: z.string().min(4).max(10) }) }),
+  asyncHandler(ctrl.verifyTwoFactor),
+);
 authRouter.post('/refresh', asyncHandler(ctrl.refresh));
 authRouter.post('/logout', asyncHandler(ctrl.logout));
 

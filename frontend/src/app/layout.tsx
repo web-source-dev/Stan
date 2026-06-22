@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth-context';
 import { MediaLibraryProvider } from '@/components/media/MediaLibrary';
+import { LanguageSwitcher } from '@/components/LanguageSwitcher';
 import DevAnnotations from '@/components/DevAnnotations';
 
 export const metadata: Metadata = {
@@ -17,6 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <AuthProvider>
           <MediaLibraryProvider>{children}</MediaLibraryProvider>
         </AuthProvider>
+        <LanguageSwitcher />
         <DevAnnotations />
       </body>
     </html>

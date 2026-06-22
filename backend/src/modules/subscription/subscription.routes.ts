@@ -17,6 +17,9 @@ import {
 } from '../../models/Subscription';
 import { UserModel } from '../../models/User';
 import { ReferralModel } from '../../models/Referral';
+import { CreatorProfileModel } from '../../models/CreatorProfile';
+import { InvoiceModel, type InvoiceDoc } from '../../models/Invoice';
+import { AppError } from '../../utils/AppError';
 import { env } from '../../config/env';
 import { requireStripe } from '../../lib/stripe';
 
@@ -60,12 +63,21 @@ function publicSub(s: SubscriptionDoc) {
     stanleyAddon: s.stanleyAddon,
     trialEndsAt: s.trialEndsAt,
     currentPeriodEnd: s.currentPeriodEnd,
+    cancelAtPeriodEnd: Boolean(s.cancelAtPeriodEnd),
     features,
     storage: {
       baseBytes: features.maxStorageBytes,
       extraBytes: extraStorageBytes,
       quotaBytes: quota === Infinity ? null : quota,
     },
+    paymentMethod: s.paymentMethod?.last4
+      ? {
+          brand: s.paymentMethod.brand || 'card',
+          last4: s.paymentMethod.last4,
+          expMonth: s.paymentMethod.expMonth,
+          expYear: s.paymentMethod.expYear,
+        }
+      : null,
   };
 }
 
@@ -79,6 +91,51 @@ const STORAGE_PACK_CATALOGUE = (Object.keys(STORAGE_PACKS) as StoragePackKey[]).
   key,
   ...STORAGE_PACKS[key],
 }));
+
+/** Next sequential invoice number for a user, e.g. INV-2026-0003. */
+async function nextInvoiceNumber(userId: string): Promise<string> {
+  const count = await InvoiceModel.countDocuments({ userId });
+  return `INV-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
+}
+
+/** Record a paid invoice for a subscription charge. */
+async function createSubscriptionInvoice(userId: string, planKey: PlanKey, periodEnd?: Date | null): Promise<InvoiceDoc | null> {
+  const plan = PLANS[planKey];
+  if (plan.cents <= 0) return null; // free plan → no invoice
+  const months = plan.interval === 'year' ? 12 : 1;
+  const periodStart = new Date();
+  return InvoiceModel.create({
+    userId,
+    number: await nextInvoiceNumber(userId),
+    kind: 'subscription',
+    description: `${plan.label} plan — ${plan.interval === 'year' ? 'Yearly' : 'Monthly'}`,
+    planKey,
+    interval: plan.interval,
+    amountCents: plan.cents,
+    currency: 'usd',
+    status: 'paid',
+    periodStart,
+    periodEnd: periodEnd ?? new Date(periodStart.getTime() + months * 30 * 24 * 60 * 60 * 1000),
+    paidAt: periodStart,
+  });
+}
+
+function publicInvoice(inv: InvoiceDoc) {
+  return {
+    id: inv.id,
+    number: inv.number,
+    kind: inv.kind,
+    description: inv.description,
+    interval: inv.interval,
+    amountCents: inv.amountCents,
+    currency: inv.currency,
+    status: inv.status,
+    periodStart: inv.periodStart,
+    periodEnd: inv.periodEnd,
+    paidAt: inv.paidAt ?? inv.get('createdAt'),
+    createdAt: inv.get('createdAt'),
+  };
+}
 
 async function getOrCreate(userId: string): Promise<SubscriptionDoc> {
   let sub = await SubscriptionModel.findOne({ userId });
@@ -115,6 +172,17 @@ subscriptionRouter.post(
     if (env.demoCheckout) {
       sub.extraStorageBytes = (sub.extraStorageBytes ?? 0) + pack.bytes;
       await sub.save();
+      await InvoiceModel.create({
+        userId: req.user!.id,
+        number: await nextInvoiceNumber(req.user!.id),
+        kind: 'storage',
+        description: `${pack.label} extra storage`,
+        interval: 'one_time',
+        amountCents: pack.cents,
+        currency: 'usd',
+        status: 'paid',
+        paidAt: new Date(),
+      }).catch(() => {});
       return res.json({ demo: true, subscription: publicSub(sub) });
     }
 
@@ -152,6 +220,7 @@ subscriptionRouter.post(
     const wasPaidActive = sub.status === 'active' && PLANS[normalizePlan(sub.plan)].tier !== 'free';
     sub.plan = plan;
     sub.stanleyAddon = PLANS[plan].tier === 'premium';
+    sub.cancelAtPeriodEnd = false; // (re)subscribing clears any scheduled cancel
 
     if (plan === 'free') {
       // Downgrade: free tier, no trial, no billing period.
@@ -172,16 +241,142 @@ subscriptionRouter.post(
     if (plan !== 'free' && !wasPaidActive) {
       await accrueReferralCommission(req.user!.id, PLANS[plan].cents);
     }
+    // Record an invoice for the charge that just activated this paid plan.
+    if (plan !== 'free') {
+      await createSubscriptionInvoice(req.user!.id, plan, sub.currentPeriodEnd).catch(() => {});
+    }
     res.json({ subscription: publicSub(sub) });
   }),
 );
 
+/**
+ * Invoice history for the creator's own subscription. If a paid subscription has
+ * no invoices yet (e.g. it predates this feature), backfill one for the current
+ * period so the billing page always reflects the active plan.
+ */
+subscriptionRouter.get(
+  '/invoices',
+  asyncHandler(async (req, res) => {
+    const userId = req.user!.id;
+    let invoices = await InvoiceModel.find({ userId }).sort({ createdAt: -1 }).limit(100);
+    if (invoices.length === 0) {
+      const sub = await getOrCreate(userId);
+      const planKey = normalizePlan(sub.plan);
+      if (PLANS[planKey].cents > 0 && (sub.status === 'active' || sub.status === 'trialing')) {
+        const inv = await createSubscriptionInvoice(userId, planKey, sub.currentPeriodEnd).catch(() => null);
+        if (inv) invoices = [inv];
+      }
+    }
+    res.json({ invoices: invoices.map(publicInvoice) });
+  }),
+);
+
+/** A single invoice + the parties, for the printable/downloadable view. */
+subscriptionRouter.get(
+  '/invoices/:id',
+  validate({ params: z.object({ id: z.string().regex(/^[a-f0-9]{24}$/) }) }),
+  asyncHandler(async (req, res) => {
+    const inv = await InvoiceModel.findOne({ _id: req.params.id, userId: req.user!.id });
+    if (!inv) throw AppError.notFound('Invoice not found');
+    const [user, profile] = await Promise.all([
+      UserModel.findById(req.user!.id),
+      CreatorProfileModel.findOne({ userId: req.user!.id }),
+    ]);
+    const a = profile?.get('address') as { street?: string; city?: string; state?: string; postalCode?: string; country?: string } | undefined;
+    const address = [a?.street, [a?.city, a?.state].filter(Boolean).join(', '), a?.postalCode, a?.country]
+      .filter((x) => x && String(x).trim())
+      .join('\n');
+    res.json({
+      invoice: publicInvoice(inv),
+      billTo: {
+        name: profile?.displayName || profile?.username || user?.email || 'Customer',
+        email: user?.email ?? '',
+        address,
+      },
+      seller: {
+        name: 'CreatorStore, Inc.',
+        detail: 'Stan subscription billing',
+        email: env.EMAIL_FROM.replace(/.*<(.+)>.*/, '$1'),
+      },
+    });
+  }),
+);
+
+/**
+ * Save a card on file — MASKED ONLY. The client must send just brand/last4/exp
+ * (derived in the browser); the full PAN and CVC must never reach the server.
+ * We hard-reject anything longer than 4 digits in last4 to enforce that.
+ */
+subscriptionRouter.post(
+  '/payment-method',
+  validate({
+    body: z.object({
+      brand: z.string().max(20).optional().default('card'),
+      last4: z.string().regex(/^\d{4}$/, 'last4 must be exactly 4 digits'),
+      expMonth: z.number().int().min(1).max(12),
+      expYear: z.number().int().min(2000).max(2100),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const { brand, last4, expMonth, expYear } = req.body as {
+      brand: string; last4: string; expMonth: number; expYear: number;
+    };
+    // Reject an already-expired card.
+    const now = new Date();
+    if (expYear < now.getFullYear() || (expYear === now.getFullYear() && expMonth < now.getMonth() + 1)) {
+      throw AppError.badRequest('That card has expired.');
+    }
+    const sub = await getOrCreate(req.user!.id);
+    sub.set('paymentMethod', { brand: brand.toLowerCase().slice(0, 20), last4, expMonth, expYear, updatedAt: new Date() });
+    await sub.save();
+    res.json({ subscription: publicSub(sub) });
+  }),
+);
+
+subscriptionRouter.delete(
+  '/payment-method',
+  asyncHandler(async (req, res) => {
+    const sub = await getOrCreate(req.user!.id);
+    sub.set('paymentMethod', undefined);
+    await sub.save();
+    res.json({ subscription: publicSub(sub) });
+  }),
+);
+
+/**
+ * Cancel the subscription. A paid plan with time left on the period is
+ * scheduled to cancel at period end — the creator keeps their plan (no refund)
+ * until `currentPeriodEnd`, then it lapses to free and won't renew. Free plans
+ * (or a paid plan with no remaining period) cancel immediately.
+ */
 subscriptionRouter.post(
   '/cancel',
   asyncHandler(async (req, res) => {
     const sub = await getOrCreate(req.user!.id);
-    sub.status = 'canceled';
+    const isPaid = PLANS[normalizePlan(sub.plan)].tier !== 'free';
+    const periodLeft = sub.currentPeriodEnd && sub.currentPeriodEnd.getTime() > Date.now();
+
+    if (isPaid && periodLeft && sub.status === 'active') {
+      sub.cancelAtPeriodEnd = true; // keep access until period end, no refund
+    } else {
+      sub.status = 'canceled';
+      sub.cancelAtPeriodEnd = false;
+    }
     await sub.save();
+    res.json({ subscription: publicSub(sub) });
+  }),
+);
+
+/** Undo a scheduled cancellation (before the period ends). */
+subscriptionRouter.post(
+  '/resume',
+  asyncHandler(async (req, res) => {
+    const sub = await getOrCreate(req.user!.id);
+    if (sub.cancelAtPeriodEnd && sub.currentPeriodEnd && sub.currentPeriodEnd.getTime() > Date.now()) {
+      sub.cancelAtPeriodEnd = false;
+      sub.status = 'active';
+      await sub.save();
+    }
     res.json({ subscription: publicSub(sub) });
   }),
 );

@@ -3,10 +3,24 @@ import { env } from '../../config/env';
 import { AppError } from '../../utils/AppError';
 import { BroadcastModel, type Segment, type BroadcastDoc } from '../../models/Broadcast';
 import { LeadModel } from '../../models/Lead';
+import { JobModel } from '../../models/Job';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { enqueueEmail, enqueueJob } from '../../lib/jobs';
 import { registerJobHandler } from '../../lib/jobRunner';
 import { recordAudit } from '../../lib/audit';
+
+type Repeat = 'none' | 'weekly' | 'monthly';
+
+/** The next occurrence for a recurring broadcast. */
+function nextOccurrence(from: Date, repeat: Repeat): Date | null {
+  if (repeat === 'weekly') return new Date(from.getTime() + 7 * 24 * 60 * 60 * 1000);
+  if (repeat === 'monthly') {
+    const d = new Date(from);
+    d.setMonth(d.getMonth() + 1);
+    return d;
+  }
+  return null;
+}
 
 /** Resolve a segment to its emailable recipients (excludes unsubscribed). */
 async function resolveRecipients(creatorId: string, segment: Segment) {
@@ -27,6 +41,8 @@ function publicBroadcast(b: BroadcastDoc) {
     subject: b.subject,
     segment: b.segment,
     status: b.status,
+    scheduledAt: b.get('scheduledAt') ?? null,
+    repeat: b.get('repeat') ?? 'none',
     recipientCount: b.recipientCount,
     sentAt: b.sentAt,
     createdAt: b.get('createdAt'),
@@ -47,12 +63,15 @@ export async function listBroadcasts(creatorId: string) {
  */
 export async function sendBroadcast(
   creatorId: string,
-  input: { subject: string; bodyText: string; bodyHtml?: string; segment: Segment },
+  input: { subject: string; bodyText: string; bodyHtml?: string; segment: Segment; scheduledAt?: string; repeat?: Repeat },
 ) {
   if (!input.subject.trim() || !input.bodyText.trim()) {
     throw AppError.badRequest('Subject and body are required');
   }
   const recipients = await resolveRecipients(creatorId, input.segment);
+  const repeat: Repeat = input.repeat ?? 'none';
+  const scheduledAt = input.scheduledAt ? new Date(input.scheduledAt) : null;
+  const isScheduled = scheduledAt instanceof Date && !Number.isNaN(scheduledAt.getTime()) && scheduledAt.getTime() > Date.now();
 
   const broadcast = await BroadcastModel.create({
     creatorId,
@@ -60,23 +79,39 @@ export async function sendBroadcast(
     bodyText: input.bodyText,
     bodyHtml: input.bodyHtml ?? '',
     segment: input.segment,
-    status: 'sending',
+    status: isScheduled ? 'scheduled' : 'sending',
+    scheduledAt: isScheduled ? scheduledAt : undefined,
+    repeat,
     recipientCount: recipients.length,
   });
 
+  const runAt = isScheduled ? scheduledAt! : new Date();
+  const occurrence = runAt.toISOString();
   await enqueueJob(
     'broadcast_send',
-    { broadcastId: broadcast.id },
-    { dedupeKey: `broadcast_send:${broadcast.id}` },
+    { broadcastId: broadcast.id, occurrence },
+    { runAt, dedupeKey: `broadcast_send:${broadcast.id}:${occurrence}` },
   );
 
   recordAudit({
-    action: 'broadcast.queued',
+    action: isScheduled ? 'broadcast.scheduled' : 'broadcast.queued',
     actorId: creatorId,
     actorType: 'user',
     creatorId,
-    metadata: { segment: input.segment, recipients: recipients.length },
+    metadata: { segment: input.segment, recipients: recipients.length, scheduledAt: occurrence, repeat },
   });
+  return publicBroadcast(broadcast);
+}
+
+/** Cancel a scheduled broadcast: stop its pending job and mark it canceled. */
+export async function cancelBroadcast(creatorId: string, broadcastId: string) {
+  const broadcast = await BroadcastModel.findOne({ _id: broadcastId, creatorId });
+  if (!broadcast) throw AppError.notFound('Broadcast not found');
+  if (broadcast.status !== 'scheduled') throw AppError.badRequest('Only scheduled broadcasts can be cancelled');
+  await JobModel.deleteMany({ type: 'broadcast_send', status: 'pending', 'payload.broadcastId': broadcast.id });
+  broadcast.status = 'canceled';
+  broadcast.repeat = 'none';
+  await broadcast.save();
   return publicBroadcast(broadcast);
 }
 
@@ -88,10 +123,14 @@ export async function sendBroadcast(
 export async function processBroadcastSend(payload: Record<string, unknown>): Promise<void> {
   const broadcastId = String(payload.broadcastId ?? '');
   if (!broadcastId) return;
+  // `occurrence` distinguishes recurring sends so per-recipient dedupe keys don't
+  // block the next week's/month's delivery.
+  const occurrence = String(payload.occurrence ?? 'once');
   const broadcast = await BroadcastModel.findById(broadcastId);
-  if (!broadcast || broadcast.status === 'sent') return;
+  if (!broadcast || broadcast.status === 'sent' || broadcast.status === 'canceled') return;
 
   const creatorId = String(broadcast.creatorId);
+  const repeat = (broadcast.get('repeat') ?? 'none') as Repeat;
   const profile = await CreatorProfileModel.findOne({ userId: creatorId }).select('displayName username');
   const recipients = await resolveRecipients(creatorId, broadcast.segment);
 
@@ -108,18 +147,36 @@ export async function processBroadcastSend(payload: Record<string, unknown>): Pr
         fromName: profile?.displayName || profile?.username || 'CreatorStore',
         unsubscribeUrl,
       },
-      { dedupeKey: `broadcast:${broadcastId}:${r.email.toLowerCase()}` },
+      { dedupeKey: `broadcast:${broadcastId}:${occurrence}:${r.email.toLowerCase()}` },
     );
   }
 
-  broadcast.status = 'sent';
   broadcast.sentAt = new Date();
-  await broadcast.save();
+  broadcast.recipientCount = recipients.length;
+
+  // Recurring: schedule the next occurrence instead of marking done.
+  const base = broadcast.get('scheduledAt') ?? new Date();
+  const next = nextOccurrence(base, repeat);
+  if (repeat !== 'none' && next) {
+    broadcast.set('scheduledAt', next);
+    broadcast.status = 'scheduled';
+    await broadcast.save();
+    const occ = next.toISOString();
+    await enqueueJob(
+      'broadcast_send',
+      { broadcastId, occurrence: occ },
+      { runAt: next, dedupeKey: `broadcast_send:${broadcastId}:${occ}` },
+    );
+  } else {
+    broadcast.status = 'sent';
+    await broadcast.save();
+  }
+
   recordAudit({
     action: 'broadcast.sent',
     actorType: 'system',
     creatorId,
-    metadata: { segment: broadcast.segment, recipients: recipients.length },
+    metadata: { segment: broadcast.segment, recipients: recipients.length, occurrence, repeat },
   });
 }
 

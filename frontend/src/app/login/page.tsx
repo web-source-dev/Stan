@@ -8,24 +8,80 @@ import { ApiException } from '@/lib/api';
 import { AuthShell, Button, Field, Alert } from '@/components/ui';
 
 export default function LoginPage() {
-  const { login } = useAuth();
+  const { login, verifyTwoFactor } = useAuth();
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // 2FA second step.
+  const [challengeId, setChallengeId] = useState('');
+  const [code, setCode] = useState('');
+  const [devCode, setDevCode] = useState('');
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
     setBusy(true);
     try {
-      await login(email, password);
+      const res = await login(email, password);
+      if (res.twoFactorRequired && res.challengeId) {
+        setChallengeId(res.challengeId);
+        setDevCode(res.devCode ?? '');
+        setBusy(false);
+        return;
+      }
       router.push('/dashboard');
     } catch (err) {
       setError(err instanceof ApiException ? err.message : 'Something went wrong');
       setBusy(false);
     }
+  }
+
+  async function onVerify(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setBusy(true);
+    try {
+      await verifyTwoFactor(challengeId, code);
+      router.push('/dashboard');
+    } catch (err) {
+      setError(err instanceof ApiException ? err.message : 'Could not verify the code');
+      setBusy(false);
+    }
+  }
+
+  if (challengeId) {
+    return (
+      <AuthShell
+        title="Verify it's you"
+        subtitle={`Enter the 6-digit code we emailed to ${email}`}
+        footer={
+          <button onClick={() => { setChallengeId(''); setCode(''); setError(''); }} className="font-semibold text-brand-600 hover:text-brand-700">
+            ← Back to login
+          </button>
+        }
+      >
+        <form onSubmit={onVerify} className="space-y-4">
+          {error && <Alert kind="error">{error}</Alert>}
+          {devCode && (
+            <Alert kind="info">Dev mode — your code is <span className="font-bold tracking-widest">{devCode}</span></Alert>
+          )}
+          <input
+            inputMode="numeric"
+            autoFocus
+            required
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            placeholder="••••••"
+            className="w-full rounded-xl border border-line-strong bg-white px-3 py-3 text-center text-lg font-semibold tracking-[0.5em] outline-none transition focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15"
+          />
+          <Button type="submit" loading={busy} disabled={code.length < 4} fullWidth size="lg">
+            {busy ? 'Verifying…' : 'Verify & log in'}
+          </Button>
+        </form>
+      </AuthShell>
+    );
   }
 
   return (

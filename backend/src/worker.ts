@@ -2,6 +2,7 @@ import { connectDb, disconnectDb } from './config/db';
 import { logger } from './config/logger';
 import { startJobRunner, stopJobRunner } from './lib/jobRunner';
 import { registerBroadcastJobs } from './modules/broadcasts/broadcasts.service';
+import { registerBookingJobs } from './modules/bookings/bookings.service';
 
 /**
  * Optional standalone worker process. In the foundation phase the job runner
@@ -11,6 +12,7 @@ import { registerBroadcastJobs } from './modules/broadcasts/broadcasts.service';
 async function main() {
   await connectDb();
   registerBroadcastJobs();
+  registerBookingJobs();
   startJobRunner();
   logger.info('Worker process started');
 

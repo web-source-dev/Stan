@@ -9,3 +9,8 @@ connectRouter.use(requireAuth);
 
 connectRouter.post('/onboard', asyncHandler(ctrl.onboard));
 connectRouter.get('/status', asyncHandler(ctrl.status));
+
+// PayPal connect (payee email).
+connectRouter.get('/paypal/status', asyncHandler(ctrl.paypalStatus));
+connectRouter.post('/paypal/connect', asyncHandler(ctrl.paypalConnect));
+connectRouter.post('/paypal/disconnect', asyncHandler(ctrl.paypalDisconnect));

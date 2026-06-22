@@ -41,6 +41,7 @@ ordersRouter.get(
         status: o.status,
         fulfilmentStatus: o.fulfilmentStatus,
         discountCode: o.get('discountCode') ?? '',
+        paymentProvider: o.get('paymentProvider') || (o.amountCents === 0 ? 'free' : 'stripe'),
         product: items.get(String(o.get('productId'))) ?? null,
         createdAt: o.get('createdAt'),
       })),

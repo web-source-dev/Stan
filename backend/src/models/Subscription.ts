@@ -140,9 +140,19 @@ export function normalizePlan(plan: string | undefined | null): PlanKey {
  * The tier whose features actually apply right now: the plan's tier while active
  * or inside a live trial, otherwise free (trial lapsed / canceled).
  */
-export function effectiveTier(sub: { plan?: string; status?: string; trialEndsAt?: Date | null }): PlanTier {
+export function effectiveTier(sub: {
+  plan?: string;
+  status?: string;
+  trialEndsAt?: Date | null;
+  cancelAtPeriodEnd?: boolean;
+  currentPeriodEnd?: Date | null;
+}): PlanTier {
   const tier = PLANS[normalizePlan(sub.plan)].tier;
-  if (sub.status === 'active') return tier;
+  if (sub.status === 'active') {
+    // Scheduled-to-cancel: keep the paid tier until the paid period ends, then free.
+    if (sub.cancelAtPeriodEnd && sub.currentPeriodEnd && sub.currentPeriodEnd.getTime() <= Date.now()) return 'free';
+    return tier;
+  }
   if (sub.status === 'trialing' && sub.trialEndsAt && sub.trialEndsAt.getTime() > Date.now()) return tier;
   return 'free';
 }
@@ -156,10 +166,24 @@ const subscriptionSchema = new Schema(
     status: { type: String, enum: ['trialing', 'active', 'canceled', 'past_due'], default: 'trialing' },
     trialEndsAt: { type: Date },
     currentPeriodEnd: { type: Date },
+    // Scheduled cancellation: the paid plan stays active (no refund) until
+    // currentPeriodEnd, then lapses to free. Cleared on resume / re-subscribe.
+    cancelAtPeriodEnd: { type: Boolean, default: false },
     stanleyAddon: { type: Boolean, default: false },
     // Permanent extra media storage bought via one-time STORAGE_PACKS purchases,
     // added on top of the tier's maxStorageBytes baseline.
     extraStorageBytes: { type: Number, default: 0 },
+
+    // MASKED card on file for display only. The full PAN and CVC are NEVER sent
+    // to or stored on the server (PCI) — only the brand + last 4 + expiry, which
+    // is exactly what a tokenized card (Stripe) exposes for display.
+    paymentMethod: {
+      brand: { type: String, default: '' },
+      last4: { type: String, default: '' },
+      expMonth: { type: Number, default: 0 },
+      expYear: { type: Number, default: 0 },
+      updatedAt: { type: Date },
+    },
   },
   { timestamps: true },
 );

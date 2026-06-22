@@ -23,6 +23,9 @@ const orderSchema = new Schema(
     stripePaymentIntentId: { type: String },
     stripeAccountId: { type: String },
 
+    // Which rail settled this order. 'free' = $0 claim, 'manual' = imported.
+    paymentProvider: { type: String, enum: ['stripe', 'paypal', 'free', 'manual'], default: 'stripe' },
+
     status: {
       type: String,
       enum: ['pending', 'paid', 'refunded', 'failed'],

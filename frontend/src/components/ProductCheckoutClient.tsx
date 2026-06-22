@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { apiRequest, ApiException } from '@/lib/api';
@@ -69,6 +69,8 @@ export function ProductCheckoutClient({
   const [orderBump, setOrderBump] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [methods, setMethods] = useState<{ card: boolean; paypal: boolean }>({ card: true, paypal: false });
+  const formRef = useRef<HTMLFormElement>(null);
   const [pricing, setPricing] = useState<{
     finalCents: number;
     totalCents: number;
@@ -114,6 +116,15 @@ export function ProductCheckoutClient({
   }, [refreshPricing]);
 
   useEffect(() => {
+    if (isFree) return;
+    apiRequest<{ card: boolean; paypal: boolean }>(`/api/checkout/payment-methods/${encodeURIComponent(username)}`, {
+      credentials: false,
+    })
+      .then(setMethods)
+      .catch(() => {});
+  }, [username, isFree]);
+
+  useEffect(() => {
     if (searchParams.get('aff')) {
       try {
         sessionStorage.setItem(`aff_${product.slug}`, searchParams.get('aff')!);
@@ -129,9 +140,8 @@ export function ProductCheckoutClient({
       : product.priceCents
   );
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (soldOut) return;
+  async function startCheckout(provider: 'card' | 'paypal') {
+    if (soldOut || busy) return;
     setBusy(true);
     setError('');
     track(username, 'checkout_start');
@@ -158,24 +168,28 @@ export function ProductCheckoutClient({
 
     try {
       if (isFree) {
-        const res = await apiRequest<{ url: string }>('/api/checkout/claim', {
-          method: 'POST',
-          credentials: false,
-          body,
-        });
+        const res = await apiRequest<{ url: string }>('/api/checkout/claim', { method: 'POST', credentials: false, body });
         window.location.href = res.url;
         return;
       }
-      const res = await apiRequest<{ url: string }>('/api/checkout/session', {
-        method: 'POST',
-        credentials: false,
-        body,
-      });
+      const path = provider === 'paypal' ? '/api/checkout/paypal/session' : '/api/checkout/session';
+      const res = await apiRequest<{ url: string }>(path, { method: 'POST', credentials: false, body });
       window.location.href = res.url;
     } catch (err) {
       setError(err instanceof ApiException ? err.message : 'Could not complete checkout');
       setBusy(false);
     }
+  }
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    void startCheckout('card');
+  }
+
+  // PayPal button is outside native submit, so trigger HTML validation manually.
+  function payWithPayPal() {
+    if (formRef.current && !formRef.current.reportValidity()) return;
+    void startCheckout('paypal');
   }
 
   const lines = (product.description || '').split('\n').filter(Boolean);
@@ -254,7 +268,7 @@ export function ProductCheckoutClient({
             This product is sold out.
           </div>
         ) : (
-          <form onSubmit={submit} className="mt-6 space-y-3">
+          <form ref={formRef} onSubmit={submit} className="mt-6 space-y-3">
             <input
               required
               placeholder="Enter your name"
@@ -352,6 +366,24 @@ export function ProductCheckoutClient({
             >
               {busy ? 'Processing…' : product.ctaLabel || (isFree ? 'Download' : 'Purchase')}
             </button>
+
+            {!isFree && methods.paypal && (
+              <>
+                <div className="flex items-center gap-3 py-0.5 text-xs font-medium text-neutral-400">
+                  <span className="h-px flex-1 bg-line" /> or <span className="h-px flex-1 bg-line" />
+                </div>
+                <button
+                  type="button"
+                  onClick={payWithPayPal}
+                  disabled={busy}
+                  aria-label="Pay with PayPal"
+                  className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[#ffc439] py-3.5 text-[15px] font-bold text-[#003087] transition hover:brightness-[1.03] disabled:opacity-60"
+                >
+                  <span>Pay with</span>
+                  <span className="font-extrabold italic"><span className="text-[#003087]">Pay</span><span className="text-[#009cde]">Pal</span></span>
+                </button>
+              </>
+            )}
           </form>
         )}
 

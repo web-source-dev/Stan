@@ -99,3 +99,46 @@ export async function getConnectedAccountId(creatorId: string): Promise<string |
   const acc = await PaymentAccountModel.findOne({ creatorId });
   return acc?.stripeAccountId ?? null;
 }
+
+/* ------------------------------------------------------------------ */
+/* PayPal                                                              */
+/* ------------------------------------------------------------------ */
+
+/** The creator's connected PayPal payee email (empty when not connected). */
+export async function getPayPalPayee(creatorId: string): Promise<string> {
+  const acc = await PaymentAccountModel.findOne({ creatorId });
+  return acc?.paypalEmail ?? '';
+}
+
+/**
+ * Whether the creator can accept PayPal. In demo mode (no platform creds, non
+ * prod) PayPal is always available so the flow is demonstrable. Live mode needs
+ * platform credentials AND the creator to have connected a payee email.
+ */
+export async function canAcceptPayPal(creatorId: string): Promise<boolean> {
+  if (env.paypalDemo) return true;
+  if (!env.paypalConfigured) return false;
+  return Boolean(await getPayPalPayee(creatorId));
+}
+
+/** Save / clear the creator's PayPal payee email. */
+export async function setPayPalEmail(creatorId: string, email: string) {
+  const acc = (await PaymentAccountModel.findOne({ creatorId })) ?? new PaymentAccountModel({ creatorId });
+  const clean = email.trim().toLowerCase();
+  acc.paypalEmail = clean;
+  acc.paypalConnectedAt = clean ? new Date() : undefined;
+  await acc.save();
+  recordAudit({ action: clean ? 'payments.paypal_connected' : 'payments.paypal_disconnected', actorId: creatorId, actorType: 'user', creatorId });
+  return { paypalEmail: acc.paypalEmail };
+}
+
+/** PayPal connection status for the dashboard. */
+export async function getPayPalStatus(creatorId: string) {
+  const acc = await PaymentAccountModel.findOne({ creatorId });
+  return {
+    connected: Boolean(acc?.paypalEmail),
+    email: acc?.paypalEmail ?? '',
+    configured: env.paypalConfigured,
+    demo: env.paypalDemo,
+  };
+}

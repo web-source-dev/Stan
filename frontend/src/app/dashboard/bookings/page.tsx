@@ -15,7 +15,24 @@ import {
 } from '@/components/icons';
 import { cn } from '@/lib/cn';
 
-interface Booking { id: string; title: string; buyerEmail: string; buyerName: string; startAt: string; endAt: string; status: string; meetingUrl: string; }
+interface Booking {
+  id: string; title: string; durationMin?: number;
+  buyerEmail: string; buyerName: string;
+  startAt: string; endAt: string; timezone?: string;
+  status: string; meetingUrl: string;
+  manageToken?: string;
+  intakeAnswers?: { question: string; answer: string }[];
+  createdAt?: string;
+}
+
+const STATUS_META: Record<string, { label: string; tone: string }> = {
+  confirmed: { label: 'Confirmed', tone: 'bg-success-50 text-success-700' },
+  pending_payment: { label: 'Pending payment', tone: 'bg-amber-50 text-amber-700' },
+  cancelled: { label: 'Cancelled', tone: 'bg-red-50 text-red-600' },
+};
+function statusBadge(s: string) {
+  return STATUS_META[s] ?? { label: s, tone: 'bg-neutral-100 text-neutral-600' };
+}
 interface Block { id: string; startAt: string; endAt: string; allDay: boolean; note: string; }
 interface NewBlock { startIso: string; endIso: string; allDay: boolean; note: string; }
 
@@ -111,7 +128,7 @@ function ViewToggle({
 /* Day popover (calendar)                                              */
 /* ------------------------------------------------------------------ */
 
-function DayPopover({ date, bookings, blocks, openLeft, onClose, onRequestBlock, onDelete }: {
+function DayPopover({ date, bookings, blocks, openLeft, onClose, onRequestBlock, onDelete, onSelect }: {
   date: Date;
   bookings: Booking[];
   blocks: Block[];
@@ -119,6 +136,7 @@ function DayPopover({ date, bookings, blocks, openLeft, onClose, onRequestBlock,
   onClose: () => void;
   onRequestBlock: () => void;
   onDelete: (id: string) => Promise<void>;
+  onSelect: (b: Booking) => void;
 }) {
   return (
     <div
@@ -142,9 +160,14 @@ function DayPopover({ date, bookings, blocks, openLeft, onClose, onRequestBlock,
       {(bookings.length > 0 || blocks.length > 0) ? (
         <div className="mt-3 space-y-2 text-left">
           {bookings.map((b) => (
-            <div key={b.id} className="rounded-lg bg-brand-50 px-3 py-2 text-[13px] font-medium text-brand-700">
-              {fmtSlot(b)} · {b.title || 'Session'}
-            </div>
+            <button
+              key={b.id}
+              onClick={() => onSelect(b)}
+              className="flex w-full items-center justify-between gap-2 rounded-lg bg-brand-50 px-3 py-2 text-left text-[13px] font-medium text-brand-700 transition hover:bg-brand-100"
+            >
+              <span className="min-w-0 truncate">{fmtSlot(b)} · {b.title || 'Session'}</span>
+              <span className="shrink-0 text-brand-400">›</span>
+            </button>
           ))}
           {blocks.map((b) => (
             <div key={b.id} className="flex items-center justify-between gap-2 rounded-lg bg-neutral-100 px-3 py-2 text-[13px]">
@@ -392,12 +415,13 @@ function BlockTimeModal({ open, initialDate, onClose, onSave }: {
 /* Calendar view                                                       */
 /* ------------------------------------------------------------------ */
 
-function CalendarView({ bookings, blocks, cursor, onRequestBlock, onDeleteBlock }: {
+function CalendarView({ bookings, blocks, cursor, onRequestBlock, onDeleteBlock, onSelect }: {
   bookings: Booking[];
   blocks: Block[];
   cursor: { year: number; month: number };
   onRequestBlock: (date: Date) => void;
   onDeleteBlock: (id: string) => Promise<void>;
+  onSelect: (b: Booking) => void;
 }) {
   const today = useMemo(() => new Date(), []);
   const [selected, setSelected] = useState<number | null>(null);
@@ -457,9 +481,13 @@ function CalendarView({ bookings, blocks, cursor, onRequestBlock, onDeleteBlock 
                 </div>
                 <div className="mt-1 space-y-1">
                   {dayBookings.slice(0, 2).map((b) => (
-                    <div key={b.id} className="truncate rounded-md bg-brand-50 px-1.5 py-0.5 text-2xs font-medium text-brand-700">
+                    <button
+                      key={b.id}
+                      onClick={(e) => { e.stopPropagation(); onSelect(b); }}
+                      className="block w-full truncate rounded-md bg-brand-50 px-1.5 py-0.5 text-left text-2xs font-medium text-brand-700 transition hover:bg-brand-100"
+                    >
                       {new Date(b.startAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} {b.title || 'Session'}
-                    </div>
+                    </button>
                   ))}
                   {dayBlocks.length > 0 && (
                     <div className="flex items-center gap-1.5 truncate rounded-md bg-neutral-200/70 px-2 py-1 text-2xs font-medium text-neutral-600">
@@ -478,6 +506,7 @@ function CalendarView({ bookings, blocks, cursor, onRequestBlock, onDeleteBlock 
                     onClose={() => setSelected(null)}
                     onRequestBlock={() => { setSelected(null); onRequestBlock(d); }}
                     onDelete={onDeleteBlock}
+                    onSelect={onSelect}
                   />
                 )}
               </div>
@@ -493,37 +522,129 @@ function CalendarView({ bookings, blocks, cursor, onRequestBlock, onDeleteBlock 
 /* List view                                                           */
 /* ------------------------------------------------------------------ */
 
-function ListView({ bookings }: { bookings: Booking[] }) {
+function ListView({ bookings, onSelect }: { bookings: Booking[]; onSelect: (b: Booking) => void }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full">
         <thead>
           <tr className="border-b border-line text-left text-[15px] font-bold text-[#1a1c3a]">
             <th className="px-2 pb-3 font-bold">Title</th>
-            <th className="px-2 pb-3 font-bold">Attendees</th>
+            <th className="px-2 pb-3 font-bold">Attendee</th>
             <th className="px-2 pb-3 font-bold">Date</th>
             <th className="px-2 pb-3 font-bold">Slot</th>
+            <th className="px-2 pb-3 font-bold">Status</th>
+            <th className="px-2 pb-3" />
           </tr>
         </thead>
         {bookings.length > 0 && (
           <tbody>
-            {bookings.map((b) => (
-              <tr key={b.id} className="border-b border-line/70 text-[15px] last:border-0 hover:bg-surface-subtle/50">
-                <td className="px-2 py-4 font-bold text-[#1a1c3a]">{b.title || 'Session'}</td>
-                <td className="px-2 py-4 text-neutral-500">{b.buyerName || b.buyerEmail || '—'}</td>
-                <td className="whitespace-nowrap px-2 py-4 text-neutral-500">
-                  {new Date(b.startAt).toLocaleDateString('en-US', { month: 'long', day: '2-digit', year: 'numeric' })}
-                </td>
-                <td className="whitespace-nowrap px-2 py-4 text-neutral-500">{fmtSlot(b)}</td>
-              </tr>
-            ))}
+            {bookings.map((b) => {
+              const sb = statusBadge(b.status);
+              return (
+                <tr key={b.id} onClick={() => onSelect(b)} className="group cursor-pointer border-b border-line/70 text-[15px] last:border-0 hover:bg-surface-subtle/50">
+                  <td className="px-2 py-4 font-bold text-[#1a1c3a]">{b.title || 'Session'}</td>
+                  <td className="px-2 py-4 text-neutral-500">
+                    <div className="font-medium text-[#1a1c3a]">{b.buyerName || '—'}</div>
+                    <div className="text-xs text-neutral-400">{b.buyerEmail}</div>
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-4 text-neutral-500">
+                    {new Date(b.startAt).toLocaleDateString('en-US', { month: 'long', day: '2-digit', year: 'numeric' })}
+                  </td>
+                  <td className="whitespace-nowrap px-2 py-4 text-neutral-500">{fmtSlot(b)}</td>
+                  <td className="px-2 py-4"><span className={cn('inline-flex rounded-full px-2 py-0.5 text-xs font-semibold', sb.tone)}>{sb.label}</span></td>
+                  <td className="px-2 py-4 text-right"><span className="text-xs font-semibold text-neutral-400 transition group-hover:text-brand-600">View →</span></td>
+                </tr>
+              );
+            })}
           </tbody>
         )}
       </table>
       {bookings.length === 0 && (
-        <SmileyEmpty title="No Appointments" subtitle="You don't have any appointments scheduled yet." />
+        <SmileyEmpty title="No Appointments" subtitle="No appointments match your filters." />
       )}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Booking detail modal                                                */
+/* ------------------------------------------------------------------ */
+
+function BookingDetailModal({ booking, onClose }: { booking: Booking; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const sb = statusBadge(booking.status);
+  const tz = booking.timezone || undefined;
+  const dateLabel = new Date(booking.startAt).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: tz });
+  const timeLabel = `${new Date(booking.startAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: tz })} – ${new Date(booking.endAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: tz })}`;
+  const initials = (booking.buyerName || booking.buyerEmail || '?').slice(0, 2).toUpperCase();
+
+  async function copyEmail() {
+    try { await navigator.clipboard.writeText(booking.buyerEmail); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ }
+  }
+
+  return (
+    <Modal open onClose={onClose} size="md">
+      <div className="flex items-start justify-between gap-3 pr-8">
+        <div>
+          <h2 className="text-xl font-bold tracking-tight text-[#1a1c3a]">{booking.title || 'Session'}</h2>
+          <span className={cn('mt-2 inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold', sb.tone)}>{sb.label}</span>
+        </div>
+      </div>
+
+      {/* Attendee */}
+      <div className="mt-5 flex items-center gap-3 rounded-2xl border border-line bg-surface-subtle/50 p-4">
+        <div className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-brand-100 text-sm font-bold text-brand-700">{initials}</div>
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-semibold text-[#1a1c3a]">{booking.buyerName || 'Guest'}</div>
+          <a href={`mailto:${booking.buyerEmail}`} className="truncate text-sm text-brand-600 hover:underline">{booking.buyerEmail}</a>
+        </div>
+        <button onClick={copyEmail} className="shrink-0 rounded-full border border-line-strong px-3 py-1.5 text-xs font-semibold text-neutral-600 transition hover:bg-white">
+          {copied ? 'Copied' : 'Copy email'}
+        </button>
+      </div>
+
+      {/* When */}
+      <div className="mt-4 space-y-2.5 text-sm">
+        <div className="flex items-center gap-2.5 text-neutral-700"><IconCalendar size={16} className="shrink-0 text-brand-600" /> {dateLabel}</div>
+        <div className="flex items-center gap-2.5 text-neutral-700"><IconClock size={16} className="shrink-0 text-brand-600" /> {timeLabel}{booking.durationMin ? ` · ${booking.durationMin} min` : ''}{tz ? ` · ${tz.replace(/_/g, ' ')}` : ''}</div>
+      </div>
+
+      {/* Intake answers */}
+      {booking.intakeAnswers && booking.intakeAnswers.length > 0 && (
+        <div className="mt-4 rounded-2xl border border-line p-4">
+          <div className="text-xs font-semibold uppercase tracking-wide text-neutral-400">Intake answers</div>
+          <dl className="mt-2 space-y-2.5">
+            {booking.intakeAnswers.map((a, i) => (
+              <div key={i}>
+                <dt className="text-xs font-semibold text-neutral-500">{a.question}</dt>
+                <dd className="text-sm text-[#1a1c3a]">{a.answer || <span className="text-neutral-400">—</span>}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+
+      {booking.createdAt && (
+        <p className="mt-4 text-xs text-neutral-400">Booked {new Date(booking.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</p>
+      )}
+
+      {/* Actions */}
+      <div className="mt-5 flex flex-wrap gap-2">
+        {booking.meetingUrl && (
+          <a href={booking.meetingUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-full bg-brand-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-brand-700">
+            <IconArrowRight size={15} /> Join meeting
+          </a>
+        )}
+        <a href={`mailto:${booking.buyerEmail}`} className="inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-white px-5 py-2.5 text-sm font-bold text-[#1a1c3a] transition hover:bg-surface-muted">
+          Email attendee
+        </a>
+        {booking.manageToken && (
+          <a href={`/booking/${booking.manageToken}`} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 rounded-full border border-line-strong bg-white px-5 py-2.5 text-sm font-bold text-[#1a1c3a] transition hover:bg-surface-muted">
+            Manage page
+          </a>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -561,12 +682,17 @@ function AppointmentsContent({ initialBookings, initialBlocks }: { initialBookin
     });
   }
 
-  // Filters
-  const [statusOn, setStatusOn] = useState(true); // "Status | Booked" — default active, per design
-  const [titleOn, setTitleOn] = useState(false);
-  const [dateOn, setDateOn] = useState(false);
-  const [titleQ, setTitleQ] = useState('');
-  const [dateQ, setDateQ] = useState('');
+  // Filters (apply to both calendar + list)
+  const [q, setQ] = useState('');
+  const [status, setStatus] = useState<'all' | 'confirmed' | 'pending_payment' | 'cancelled'>('all');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [timeFilter, setTimeFilter] = useState<'all' | 'upcoming' | 'past'>('upcoming');
+  const [detail, setDetail] = useState<Booking | null>(null);
+
+  const typeOptions = useMemo(
+    () => Array.from(new Set((bookings ?? []).map((b) => b.title).filter(Boolean))).sort(),
+    [bookings],
+  );
 
   useEffect(() => {
     if (initialBookings !== undefined) return;
@@ -579,17 +705,26 @@ function AppointmentsContent({ initialBookings, initialBlocks }: { initialBookin
   }, [authedRequest, initialBookings]);
 
   const filtered = useMemo(() => {
-    let list = bookings ?? [];
-    // "Status | Booked" chip: when active, show only confirmed bookings.
-    if (statusOn) list = list.filter((b) => b.status === 'confirmed');
-    if (titleOn && titleQ) list = list.filter((b) => (b.title || '').toLowerCase().includes(titleQ.toLowerCase()));
-    if (dateOn && dateQ) list = list.filter((b) => ymd(new Date(b.startAt)) === dateQ);
-    return list;
-  }, [bookings, statusOn, titleOn, titleQ, dateOn, dateQ]);
+    const now = Date.now();
+    const term = q.trim().toLowerCase();
+    return (bookings ?? []).filter((b) => {
+      if (status !== 'all' && b.status !== status) return false;
+      if (typeFilter && b.title !== typeFilter) return false;
+      if (timeFilter === 'upcoming' && new Date(b.endAt).getTime() < now) return false;
+      if (timeFilter === 'past' && new Date(b.endAt).getTime() >= now) return false;
+      if (term) {
+        const hay = `${b.title} ${b.buyerName} ${b.buyerEmail}`.toLowerCase();
+        if (!hay.includes(term)) return false;
+      }
+      return true;
+    });
+  }, [bookings, q, status, typeFilter, timeFilter]);
 
+  const filtersActive = Boolean(q || status !== 'all' || typeFilter || timeFilter !== 'upcoming');
   function resetFilters() {
-    setStatusOn(true); setTitleOn(false); setDateOn(false); setTitleQ(''); setDateQ('');
+    setQ(''); setStatus('all'); setTypeFilter(''); setTimeFilter('upcoming');
   }
+  const SELECT = 'rounded-full border border-line-strong bg-white px-3.5 py-2 text-sm font-semibold text-ink outline-none transition hover:border-brand-400 focus:border-brand-500';
 
   return (
     <>
@@ -603,7 +738,7 @@ function AppointmentsContent({ initialBookings, initialBlocks }: { initialBookin
       <div className="mt-5 rounded-3xl bg-white p-6 shadow-[0_1px_3px_rgba(15,15,25,0.05)] sm:p-7">
         {(
           <>
-            {/* Toolbar */}
+            {/* Toolbar: month nav (calendar) + view toggle */}
             <div className="flex flex-wrap items-center justify-between gap-4">
               {view === 'calendar' ? (
                 <div className="flex items-center gap-3">
@@ -615,65 +750,56 @@ function AppointmentsContent({ initialBookings, initialBlocks }: { initialBookin
                     <IconArrowRight size={16} />
                   </button>
                 </div>
-              ) : (
-                <div className="flex flex-wrap items-center gap-2.5">
-                  <button
-                    onClick={() => setTitleOn((o) => !o)}
-                    className={cn('inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-semibold transition',
-                      titleOn ? 'bg-brand-600 text-white' : 'bg-brand-50 text-brand-600 hover:bg-brand-100')}
-                  >
-                    <span className="text-base leading-none">{titleOn ? '×' : '+'}</span> Title
-                  </button>
-                  <button
-                    onClick={() => setDateOn((o) => !o)}
-                    className={cn('inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-sm font-semibold transition',
-                      dateOn ? 'bg-brand-600 text-white' : 'bg-brand-50 text-brand-600 hover:bg-brand-100')}
-                  >
-                    <span className="text-base leading-none">{dateOn ? '×' : '+'}</span> Date
-                  </button>
-                  {statusOn && (
-                    <button
-                      onClick={() => setStatusOn(false)}
-                      className="inline-flex items-center gap-2 rounded-full bg-brand-600 px-3.5 py-2 text-sm font-semibold text-white"
-                    >
-                      <span className="text-base leading-none">×</span>
-                      Status <span className="text-white/40">|</span> <span className="font-bold">Booked</span>
-                    </button>
-                  )}
-                  <button
-                    onClick={resetFilters}
-                    className="inline-flex items-center rounded-full border border-line-strong bg-white px-4 py-2 text-sm font-bold text-[#131f60] transition hover:bg-surface-muted"
-                  >
-                    Reset Filters
-                  </button>
-                </div>
-              )}
+              ) : <div className="text-xl font-bold tracking-tight text-[#1a1c3a]">Appointments</div>}
 
               <ViewToggle view={view} onView={setView} onSettings={() => router.push('/dashboard/settings?tab=integrations')} />
             </div>
 
-            {/* Active filter inputs */}
-            {view === 'list' && (titleOn || dateOn) && (
-              <div className="mt-4 flex flex-wrap gap-2">
-                {titleOn && (
-                  <input className="w-56 rounded-lg border border-line-strong px-3 py-2 text-sm outline-none focus:border-brand-500"
-                    placeholder="Title contains…" value={titleQ} onChange={(e) => setTitleQ(e.target.value)} />
-                )}
-                {dateOn && (
-                  <input type="date" className="rounded-lg border border-line-strong px-3 py-2 text-sm outline-none focus:border-brand-500"
-                    value={dateQ} onChange={(e) => setDateQ(e.target.value)} />
-                )}
-              </div>
-            )}
+            {/* Unified filter bar (applies to both views) */}
+            <div className="mt-4 flex flex-wrap items-center gap-2.5">
+              <input
+                className="min-w-[180px] flex-1 rounded-full border border-line-strong bg-white px-4 py-2 text-sm outline-none transition focus:border-brand-500"
+                placeholder="Search name, email, or title…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
+              <select value={timeFilter} onChange={(e) => setTimeFilter(e.target.value as typeof timeFilter)} className={SELECT} title="Time">
+                <option value="upcoming">Upcoming</option>
+                <option value="past">Past</option>
+                <option value="all">All time</option>
+              </select>
+              <select value={status} onChange={(e) => setStatus(e.target.value as typeof status)} className={SELECT} title="Status">
+                <option value="all">All statuses</option>
+                <option value="confirmed">Confirmed</option>
+                <option value="pending_payment">Pending payment</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+              {typeOptions.length > 1 && (
+                <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className={SELECT} title="Type">
+                  <option value="">All types</option>
+                  {typeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              )}
+              {filtersActive && (
+                <button onClick={resetFilters} className="rounded-full px-3 py-2 text-sm font-semibold text-neutral-500 hover:text-ink">Reset</button>
+              )}
+            </div>
 
             {/* Body */}
             <div className="mt-6">
               {bookings === null ? (
                 <Skeleton className="h-64 w-full" />
-              ) : view === 'list' ? (
-                <ListView bookings={filtered} />
               ) : (
-                <CalendarView bookings={filtered} blocks={blocks} cursor={cursor} onRequestBlock={setBlockFor} onDeleteBlock={deleteBlock} />
+                <>
+                  <div className="mb-3 text-sm text-neutral-500">
+                    {filtered.length} appointment{filtered.length === 1 ? '' : 's'}
+                  </div>
+                  {view === 'list' ? (
+                    <ListView bookings={filtered} onSelect={setDetail} />
+                  ) : (
+                    <CalendarView bookings={filtered} blocks={blocks} cursor={cursor} onRequestBlock={setBlockFor} onDeleteBlock={deleteBlock} onSelect={setDetail} />
+                  )}
+                </>
               )}
             </div>
           </>
@@ -686,6 +812,8 @@ function AppointmentsContent({ initialBookings, initialBlocks }: { initialBookin
         onClose={() => setBlockFor(null)}
         onSave={createBlock}
       />
+
+      {detail && <BookingDetailModal booking={detail} onClose={() => setDetail(null)} />}
     </>
   );
 }

@@ -16,7 +16,11 @@ const broadcastSchema = new Schema(
     bodyText: { type: String, required: true },
     segment: { type: String, enum: SEGMENTS, default: 'all_leads' },
 
-    status: { type: String, enum: ['draft', 'sending', 'sent'], default: 'draft' },
+    status: { type: String, enum: ['draft', 'scheduled', 'sending', 'sent', 'canceled'], default: 'draft' },
+    // When set + in the future, the send is deferred until this time.
+    scheduledAt: { type: Date },
+    // Recurring newsletters: re-send on this cadence after each occurrence.
+    repeat: { type: String, enum: ['none', 'weekly', 'monthly'], default: 'none' },
     recipientCount: { type: Number, default: 0 },
     sentAt: { type: Date },
   },

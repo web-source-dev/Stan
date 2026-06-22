@@ -104,6 +104,7 @@ bookingsRouter.post(
       name: z.string().max(120).optional(),
       startIso: z.string().min(10),
       intakeAnswers: z.array(z.object({ question: z.string().max(200), answer: z.string().max(2000) })).max(10).optional(),
+      provider: z.enum(['stripe', 'paypal']).optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
