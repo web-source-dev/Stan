@@ -233,6 +233,27 @@
   height: 0;
 }
 
+/* Visible horizontal scrollbar for date pickers and similar strips. */
+.horizontal-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #b8b8c4 #eef0f4;
+  -webkit-overflow-scrolling: touch;
+}
+.horizontal-scroll::-webkit-scrollbar {
+  height: 8px;
+}
+.horizontal-scroll::-webkit-scrollbar-track {
+  background: #eef0f4;
+  border-radius: 999px;
+}
+.horizontal-scroll::-webkit-scrollbar-thumb {
+  background: #b8b8c4;
+  border-radius: 999px;
+}
+.horizontal-scroll::-webkit-scrollbar-thumb:hover {
+  background: #9b9baa;
+}
+
 /* ---- Stan Product Editor (reference screenshots) ---- */
 .product-editor-page {
   color: #1a1a2e;

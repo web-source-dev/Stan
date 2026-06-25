@@ -544,7 +544,25 @@ export async function runSeed(options: { force?: boolean } = {}): Promise<void> 
     earningsCents: 5800,
   });
 
-  // ---- Email flow (post-purchase drip) ----
+  // ---- Email flows ----
+  await EmailFlowModel.create({
+    creatorId: mayaId,
+    name: 'New subscriber welcome',
+    trigger: 'lead',
+    enabled: true,
+    steps: [
+      {
+        dayOffset: 0,
+        subject: "You're on the list! 🌟",
+        body: "Hey!\n\nThanks for subscribing — I'm so glad you're here. I'll send you first access to new templates, launch tips, and occasional freebies.\n\nTalk soon,\nMaya",
+      },
+      {
+        dayOffset: 3,
+        subject: 'Start here: my favourite Notion setup',
+        body: "Quick tip: open the Content Calendar page first — most creators tell me that's the game-changer.\n\nReply anytime if you have questions!",
+      },
+    ],
+  });
   await EmailFlowModel.create({
     creatorId: mayaId,
     name: 'Post-purchase welcome',

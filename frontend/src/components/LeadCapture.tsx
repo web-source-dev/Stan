@@ -29,6 +29,7 @@ export function LeadCapture({
   const [consent, setConsent] = useState(false);
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
   const bg = cardBg || (dark ? 'rgba(255,255,255,0.08)' : '#ffffff');
   const inputBg = dark ? 'rgba(255,255,255,0.08)' : '#ffffff';
@@ -45,17 +46,22 @@ export function LeadCapture({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!consent) {
+      setError('Please agree to receive emails to subscribe.');
+      return;
+    }
     setBusy(true);
+    setError('');
     try {
       await apiRequest('/api/leads', {
         method: 'POST',
         credentials: false,
-        body: { username, email, firstName: firstName || undefined, source: 'storefront', consent, utm: utm() },
+        body: { username, email, firstName: firstName || undefined, source: 'storefront', consent: true, utm: utm() },
       });
       track(username, 'lead_submit');
       setDone(true);
     } catch {
-      setDone(true);
+      setError('Could not subscribe right now. Please try again.');
     } finally {
       setBusy(false);
     }
@@ -97,12 +103,13 @@ export function LeadCapture({
             style={{ backgroundColor: inputBg, borderColor: inputBorder, color: ink }}
           />
           <label className="flex items-start gap-2 text-xs" style={{ color: sub }}>
-            <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} className="mt-0.5 h-4 w-4 rounded accent-brand-600" />
+            <input type="checkbox" required checked={consent} onChange={(e) => setConsent(e.target.checked)} className="mt-0.5 h-4 w-4 rounded accent-brand-600" />
             <span>I agree to receive emails.</span>
           </label>
+          {error && <p className="text-xs text-red-600">{error}</p>}
           <button
             type="submit"
-            disabled={busy}
+            disabled={busy || !consent}
             className="w-full min-h-[44px] rounded-xl px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:brightness-105 active:scale-[0.98] motion-reduce:active:scale-100 disabled:opacity-60"
             style={{ backgroundColor: accent }}
           >

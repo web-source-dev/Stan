@@ -9,9 +9,14 @@ import { BookingModel, BookingTypeModel } from '../../models/Booking';
 import { ProductModel } from '../../models/Product';
 import { CourseModel, CourseLessonModel } from '../../models/Course';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
+import { UserModel } from '../../models/User';
+import { EmailFlowModel } from '../../models/EmailFlow';
 import { recordAudit } from '../../lib/audit';
 import { triggerFlows } from '../flows/flows.service';
 import { bookingDisplayStatus } from '../bookings/bookingDisplay';
+import { enqueueEmail } from '../../lib/jobs';
+import { env } from '../../config/env';
+import { unsubscribeToken } from '../broadcasts/broadcasts.service';
 
 /** Split a free-text full name into first/last for the contact record. */
 function splitName(name?: string): { firstName: string; lastName: string } {
@@ -45,8 +50,76 @@ interface CaptureInput {
   firstName?: string;
   source?: 'storefront' | 'product' | 'checkout' | 'other';
   utm?: { source?: string; medium?: string; campaign?: string };
-  consent?: boolean;
+  consent: boolean;
   tags?: string[];
+}
+
+/** Emailable opt-in contacts for broadcasts and subscriber counts. */
+function subscriberFilter(creatorId: string) {
+  return {
+    creatorId,
+    consent: true,
+    optInStatus: 'confirmed' as const,
+    unsubscribedAt: { $exists: false },
+  };
+}
+
+async function sendSubscriberWelcome(
+  creatorId: string,
+  email: string,
+  firstName: string,
+  profile: { displayName?: string; username: string },
+): Promise<void> {
+  const creatorName = profile.displayName || profile.username;
+  const storefrontUrl = `${env.APP_URL}/${profile.username}`;
+  const unsubscribeUrl = `${env.APP_URL}/unsubscribe?c=${creatorId}&e=${encodeURIComponent(email)}&t=${unsubscribeToken(creatorId, email)}`;
+
+  const customFlows = await EmailFlowModel.countDocuments({ creatorId, trigger: 'lead', enabled: true });
+  if (customFlows > 0) {
+    await triggerFlows(creatorId, email, 'lead');
+    return;
+  }
+
+  await enqueueEmail(
+    email,
+    'subscriber_welcome',
+    { creatorName, storefrontUrl, unsubscribeUrl, firstName: firstName || undefined },
+    { dedupeKey: `subscriber_welcome:${creatorId}:${email.toLowerCase()}` },
+  );
+}
+
+async function notifyCreatorNewSubscriber(
+  creatorId: string,
+  subscriber: { email: string; firstName: string },
+  creatorName: string,
+): Promise<void> {
+  const user = await UserModel.findById(creatorId).select('email notificationPrefs');
+  if (!user?.email) return;
+  const prefs = user.get('notificationPrefs') as { leadCaptured?: boolean } | undefined;
+  if (prefs?.leadCaptured === false) return;
+
+  await enqueueEmail(
+    user.email,
+    'lead_captured',
+    {
+      creatorName,
+      subscriberEmail: subscriber.email,
+      subscriberName: subscriber.firstName || subscriber.email,
+      leadsUrl: `${env.APP_URL}/dashboard/leads`,
+    },
+    { dedupeKey: `lead_captured:${creatorId}:${subscriber.email.toLowerCase()}` },
+  );
+}
+
+async function onNewSubscriber(
+  creatorId: string,
+  email: string,
+  firstName: string,
+  profile: { displayName?: string; username: string },
+): Promise<void> {
+  const creatorName = profile.displayName || profile.username;
+  await sendSubscriberWelcome(creatorId, email, firstName, profile);
+  await notifyCreatorNewSubscriber(creatorId, { email, firstName }, creatorName);
 }
 
 function publicLead(l: LeadDoc) {
@@ -146,14 +219,20 @@ export async function importContacts(
  * duplicate. Returns whether the contact was newly created.
  */
 export async function captureLead(input: CaptureInput): Promise<{ created: boolean }> {
+  if (!input.consent) {
+    throw AppError.badRequest('You must agree to receive emails to subscribe.');
+  }
+
   const profile = await CreatorProfileModel.findOne({ username: input.username });
   if (!profile || !profile.published) throw AppError.notFound('Storefront not found');
   const creatorId = String(profile.userId);
 
   const existing = await LeadModel.findOne({ creatorId, email: input.email });
   if (existing) {
+    const wasUnsubscribed = Boolean(existing.unsubscribedAt);
     if (input.firstName && !existing.firstName) existing.firstName = input.firstName;
     if (input.tags?.length) existing.tags = Array.from(new Set([...existing.tags, ...input.tags]));
+    existing.tags = Array.from(new Set([...existing.tags, 'subscriber']));
     if (input.utm) {
       const prev = existing.utm ?? { source: '', medium: '', campaign: '' };
       existing.utm = {
@@ -162,7 +241,14 @@ export async function captureLead(input: CaptureInput): Promise<{ created: boole
         campaign: input.utm.campaign ?? prev.campaign,
       };
     }
+    existing.consent = true;
+    existing.optInStatus = 'confirmed';
+    if (wasUnsubscribed) existing.set('unsubscribedAt', undefined);
     await existing.save();
+
+    if (wasUnsubscribed) {
+      await onNewSubscriber(creatorId, input.email, existing.firstName, profile).catch(() => {});
+    }
     return { created: false };
   }
 
@@ -172,11 +258,12 @@ export async function captureLead(input: CaptureInput): Promise<{ created: boole
     firstName: input.firstName ?? '',
     source: input.source ?? 'storefront',
     utm: input.utm ?? {},
-    consent: input.consent ?? false,
-    tags: input.tags ?? [],
+    consent: true,
+    optInStatus: 'confirmed',
+    tags: Array.from(new Set([...(input.tags ?? []), 'subscriber'])),
   });
   recordAudit({ action: 'lead.captured', actorType: 'anonymous', creatorId, metadata: { source: input.source } });
-  await triggerFlows(creatorId, input.email, 'lead').catch(() => {});
+  await onNewSubscriber(creatorId, input.email, input.firstName ?? '', profile).catch(() => {});
   return { created: true };
 }
 
@@ -220,7 +307,7 @@ export async function leadStats(creatorId: string) {
   const [total, customers, subscribers] = await Promise.all([
     LeadModel.countDocuments({ creatorId }),
     LeadModel.countDocuments({ creatorId, isCustomer: true }),
-    LeadModel.countDocuments({ creatorId, unsubscribedAt: { $exists: false } }),
+    LeadModel.countDocuments(subscriberFilter(creatorId)),
   ]);
   return { total, customers, subscribers };
 }

@@ -21,7 +21,7 @@ const captureSchema = z.object({
       campaign: z.string().max(100).optional(),
     })
     .optional(),
-  consent: z.boolean().optional(),
+  consent: z.literal(true),
   tags: z.array(z.string().max(40)).max(10).optional(),
 });
 

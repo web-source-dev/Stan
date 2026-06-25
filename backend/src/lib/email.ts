@@ -20,7 +20,9 @@ export type EmailTemplate =
   | 'booking_reminder'
   | 'booking_cancelled'
   | 'customer_login_code'
-  | 'login_code';
+  | 'login_code'
+  | 'subscriber_welcome'
+  | 'lead_captured';
 
 interface TemplateData {
   email_verification: { verifyUrl: string };
@@ -66,6 +68,18 @@ interface TemplateData {
   };
   login_code: {
     code: string;
+  };
+  subscriber_welcome: {
+    creatorName: string;
+    storefrontUrl: string;
+    unsubscribeUrl: string;
+    firstName?: string;
+  };
+  lead_captured: {
+    creatorName: string;
+    subscriberEmail: string;
+    subscriberName: string;
+    leadsUrl: string;
   };
 }
 
@@ -239,6 +253,38 @@ export function renderEmail<T extends EmailTemplate>(
           `<p>Your password was just changed. If this wasn't you, reset your password immediately and contact support.</p>`,
         ),
         text: 'Your password was just changed. If this was not you, reset it immediately.',
+      };
+    }
+    case 'subscriber_welcome': {
+      const { creatorName, storefrontUrl, unsubscribeUrl, firstName } =
+        data as TemplateData['subscriber_welcome'];
+      const greeting = firstName ? `Hi ${firstName},` : 'Hi there,';
+      const body =
+        `<p>${greeting}</p>` +
+        `<p>Thanks for subscribing to updates from <strong>${creatorName}</strong>. ` +
+        `You'll be the first to hear about new drops, tips, and announcements.</p>` +
+        `<p>${button(storefrontUrl, `Visit ${creatorName}'s store`)}</p>` +
+        `<p style="color:#aaa;font-size:11px;margin-top:24px"><a href="${unsubscribeUrl}" style="color:#aaa">Unsubscribe</a></p>`;
+      return {
+        subject: `You're on ${creatorName}'s list`,
+        html: layout(`Welcome to ${creatorName}'s list`, body),
+        text:
+          `${greeting}\n\nThanks for subscribing to updates from ${creatorName}. ` +
+          `You'll be the first to hear about new drops, tips, and announcements.\n\n` +
+          `Visit the store: ${storefrontUrl}\n\nUnsubscribe: ${unsubscribeUrl}`,
+      };
+    }
+    case 'lead_captured': {
+      const { creatorName, subscriberEmail, subscriberName, leadsUrl } =
+        data as TemplateData['lead_captured'];
+      return {
+        subject: `New subscriber on ${creatorName}`,
+        html: layout(
+          'New email subscriber',
+          `<p><strong>${subscriberName}</strong> (${subscriberEmail}) just subscribed on your storefront.</p>` +
+            `<p>${button(leadsUrl, 'View contacts')}</p>`,
+        ),
+        text: `${subscriberName} (${subscriberEmail}) subscribed on your storefront.\n\nView contacts: ${leadsUrl}`,
       };
     }
     default:

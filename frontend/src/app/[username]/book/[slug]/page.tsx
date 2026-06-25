@@ -219,7 +219,7 @@ export default function BookingPage({ params }: { params: Promise<{ username: st
                 {/* Step 1: date */}
                 <div>
                   <h2 className="text-xs font-bold uppercase tracking-wide text-neutral-400">Select a date</h2>
-                  <div className="mt-3 flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <div className="horizontal-scroll mt-3 flex gap-2 overflow-x-auto pb-2">
                     {days.map((d) => {
                       const on = d.key === selectedDay;
                       return (

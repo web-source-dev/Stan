@@ -26,7 +26,10 @@ function nextOccurrence(from: Date, repeat: Repeat): Date | null {
 async function resolveRecipients(creatorId: string, segment: Segment) {
   const base: Record<string, unknown> = { creatorId, unsubscribedAt: { $exists: false } };
   if (segment === 'customers') base.isCustomer = true;
-  if (segment === 'subscribers') base.optInStatus = 'confirmed';
+  if (segment === 'subscribers') {
+    base.optInStatus = 'confirmed';
+    base.consent = true;
+  }
   return LeadModel.find(base).select('email firstName').lean();
 }
 
