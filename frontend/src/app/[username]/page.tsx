@@ -51,6 +51,17 @@ export default async function StorefrontPage({ params }: Props) {
   return (
     <>
       <StorefrontAnalytics username={profile.username} />
+      {/* Always-visible entry point to the buyer's self-service portal. */}
+      <a
+        href={`/${profile.username}/account`}
+        className="fixed right-3 top-3 z-50 inline-flex items-center gap-1.5 rounded-full border border-black/10 bg-white/85 px-3.5 py-2 text-xs font-semibold text-neutral-700 shadow-soft backdrop-blur transition hover:bg-white hover:text-ink sm:right-5 sm:top-5 sm:text-sm"
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+          <circle cx="12" cy="7" r="4" />
+        </svg>
+        My purchases
+      </a>
       <StoreCanvas
         mode="live"
         profile={profile}

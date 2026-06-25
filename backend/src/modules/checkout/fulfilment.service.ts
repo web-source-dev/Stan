@@ -10,6 +10,7 @@ import { upsertCustomerLead } from '../leads/leads.service';
 import { triggerFlows, triggerProductEmailFlows } from '../flows/flows.service';
 import { CourseModel } from '../../models/Course';
 import { EnrollmentModel } from '../../models/Enrollment';
+import { CreatorProfileModel } from '../../models/CreatorProfile';
 
 /**
  * Bump a product's sales counters at fulfilment. Revenue is always recorded.
@@ -51,10 +52,15 @@ function formatMoney(cents: number, currency: string): string {
   }
 }
 
-function personalizeConfirmText(text: string, product: ProductDoc, fulfilmentUrl: string): string {
+async function resolveCreatorUsername(creatorId: string): Promise<string | undefined> {
+  const profile = await CreatorProfileModel.findOne({ userId: creatorId }).select('username').lean();
+  return profile?.username;
+}
+
+function personalizeConfirmText(text: string, product: ProductDoc, fulfilmentUrl: string, creatorUsername = ''): string {
   return text
     .replace(/\[Product Name\]/g, product.title)
-    .replace(/\[My Username\]/g, '')
+    .replace(/\[My Username\]/g, creatorUsername)
     .replace(/\[Download Link\]/g, fulfilmentUrl)
     .replace(/\[Access Link\]/g, fulfilmentUrl);
 }
@@ -64,23 +70,32 @@ async function sendProductConfirmationEmail(
   product: ProductDoc,
   order: { amountCents: number; currency: string },
   fulfilmentUrl: string,
+  creatorUsername?: string,
 ): Promise<void> {
   const amount = formatMoney(order.amountCents, order.currency);
+  const portalUrl = creatorUsername
+    ? `${env.APP_URL}/${creatorUsername}/account?email=${encodeURIComponent(buyerEmail)}`
+    : undefined;
+
   if (product.confirmSubject.trim() || product.confirmBody.trim()) {
     const subject = personalizeConfirmText(
       product.confirmSubject.trim() || `Your purchase: ${product.title}`,
       product,
       fulfilmentUrl,
+      creatorUsername ?? '',
     );
     const bodyText = personalizeConfirmText(
       product.confirmBody.trim() ||
         `Thanks for purchasing ${product.title}.\n\nAccess your purchase: ${fulfilmentUrl}`,
       product,
       fulfilmentUrl,
+      creatorUsername ?? '',
     );
     await enqueueEmail(buyerEmail, 'broadcast', {
       subject,
-      bodyText: `${bodyText}\n\n${product.thankYouMessage ? product.thankYouMessage + '\n\n' : ''}Access link: ${fulfilmentUrl}`,
+      bodyText:
+        `${bodyText}\n\n${product.thankYouMessage ? product.thankYouMessage + '\n\n' : ''}Access link: ${fulfilmentUrl}` +
+        (portalUrl ? `\n\nView all your purchases: ${portalUrl}` : ''),
     });
     return;
   }
@@ -90,6 +105,7 @@ async function sendProductConfirmationEmail(
     amount,
     fulfilmentUrl,
     thankYouMessage: product.thankYouMessage || '',
+    portalUrl,
   });
 }
 
@@ -161,7 +177,8 @@ export async function fulfilFreeProduct(input: {
   const fulfilmentUrl = `${env.APP_URL}/access/${entitlement.accessToken}`;
 
   if (order.fulfilmentStatus !== 'fulfilled') {
-    await sendProductConfirmationEmail(buyerEmail, product, order, fulfilmentUrl);
+    const creatorUsername = await resolveCreatorUsername(creatorId).catch(() => undefined);
+    await sendProductConfirmationEmail(buyerEmail, product, order, fulfilmentUrl, creatorUsername);
     order.fulfilmentStatus = 'fulfilled';
     await order.save();
     if (isNew) {
@@ -272,7 +289,8 @@ export async function fulfilCheckoutSession(
   // Enqueue receipt + fulfilment email (durable, retried by the job runner).
   if (order.fulfilmentStatus !== 'fulfilled' && entitlement) {
     const fulfilmentUrl = `${env.APP_URL}/access/${entitlement.accessToken}`;
-    await sendProductConfirmationEmail(buyerEmail, product, order, fulfilmentUrl);
+    const creatorUsername = await resolveCreatorUsername(creatorId).catch(() => undefined);
+    await sendProductConfirmationEmail(buyerEmail, product, order, fulfilmentUrl, creatorUsername);
     order.fulfilmentStatus = 'fulfilled';
     await order.save();
     if (isNew) {
@@ -344,10 +362,15 @@ async function fulfilCourseSession(
   }
 
   if (order.fulfilmentStatus !== 'fulfilled') {
+    const creatorUsername = await resolveCreatorUsername(creatorId).catch(() => undefined);
+    const portalUrl = creatorUsername
+      ? `${env.APP_URL}/${creatorUsername}/account?email=${encodeURIComponent(buyerEmail)}`
+      : undefined;
     await enqueueEmail(buyerEmail, 'purchase_receipt', {
       productTitle: course.title,
       amount: formatMoney(order.amountCents, order.currency),
       fulfilmentUrl: `${env.APP_URL}/learn/${enrollment.accessToken}`,
+      portalUrl,
     });
     order.fulfilmentStatus = 'fulfilled';
     await order.save();
@@ -387,5 +410,10 @@ export async function markRefunded(paymentIntentId: string): Promise<void> {
     { orderId: order.id, revokedAt: { $exists: false } },
     { $set: { revokedAt: new Date() } },
   );
+  // Booking purchases — cancel the confirmed slot and notify the buyer.
+  if (order.stripeCheckoutSessionId) {
+    const { cancelBookingByCheckoutSession } = await import('../bookings/bookings.service');
+    await cancelBookingByCheckoutSession(order.stripeCheckoutSessionId).catch(() => {});
+  }
   recordAudit({ action: 'order.refunded', actorType: 'system', creatorId: String(order.creatorId), targetType: 'order', targetId: order.id });
 }

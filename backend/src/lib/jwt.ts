@@ -7,6 +7,10 @@ const AUDIENCE = 'creatorstore-api';
 // A separate audience so customer-portal sessions can never be presented as
 // creator access tokens (and vice versa) even though they share a secret.
 const PORTAL_AUDIENCE = 'creatorstore-portal';
+// A buyer signed in across ALL creators they've purchased from (scoped to a
+// verified email only, no single creator). Distinct audience so it can never be
+// presented as a per-store portal token.
+const GLOBAL_PORTAL_AUDIENCE = 'creatorstore-portal-global';
 const PORTAL_TTL = '30d';
 
 export interface AccessTokenPayload {
@@ -75,4 +79,25 @@ export function verifyPortalToken(token: string): PortalTokenPayload {
     issuer: ISSUER,
     audience: PORTAL_AUDIENCE,
   }) as PortalTokenPayload;
+}
+
+export interface GlobalPortalTokenPayload {
+  /** Verified buyer email (lowercased). Not tied to any single creator. */
+  sub: string;
+}
+
+/** Sign a passwordless buyer session that spans every creator's store. */
+export function signGlobalPortalToken(payload: GlobalPortalTokenPayload): string {
+  return jwt.sign(payload, env.JWT_ACCESS_SECRET, {
+    issuer: ISSUER,
+    audience: GLOBAL_PORTAL_AUDIENCE,
+    expiresIn: PORTAL_TTL,
+  });
+}
+
+export function verifyGlobalPortalToken(token: string): GlobalPortalTokenPayload {
+  return jwt.verify(token, env.JWT_ACCESS_SECRET, {
+    issuer: ISSUER,
+    audience: GLOBAL_PORTAL_AUDIENCE,
+  }) as GlobalPortalTokenPayload;
 }

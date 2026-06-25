@@ -192,6 +192,9 @@ export const IconChat = (p: IconProps) => (
 export const IconBell = (p: IconProps) => (
   <Svg {...p}><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z" /><path d="M10 20a2 2 0 0 0 4 0" /></Svg>
 );
+export const IconPin = (p: IconProps) => (
+  <Svg {...p}><path d="m12 17 1-8" /><path d="M8 17h8" /><path d="M9 3h6l2 4-5 5-5-5Z" /></Svg>
+);
 
 /** Brand wordmark + glyph. */
 export function Logo({ className = '', glyphOnly = false }: { className?: string; glyphOnly?: boolean }) {

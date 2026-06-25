@@ -14,6 +14,8 @@ declare global {
         email: string;
         creatorId: string;
       };
+      /** Populated by requireGlobalAuth: the verified email for the cross-store portal. */
+      globalPortalEmail?: string;
     }
   }
 }

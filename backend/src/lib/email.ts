@@ -18,6 +18,7 @@ export type EmailTemplate =
   | 'broadcast'
   | 'booking_confirmation'
   | 'booking_reminder'
+  | 'booking_cancelled'
   | 'customer_login_code'
   | 'login_code';
 
@@ -30,6 +31,7 @@ interface TemplateData {
     amount: string;
     fulfilmentUrl: string;
     thankYouMessage?: string;
+    portalUrl?: string;
   };
   broadcast: {
     subject: string;
@@ -43,6 +45,7 @@ interface TemplateData {
     whenText: string;
     meetingUrl?: string;
     manageUrl: string;
+    portalUrl?: string;
   };
   booking_reminder: {
     title: string;
@@ -50,6 +53,12 @@ interface TemplateData {
     startsInText: string;
     meetingUrl?: string;
     manageUrl: string;
+    portalUrl?: string;
+  };
+  booking_cancelled: {
+    title: string;
+    whenText: string;
+    reason?: string;
   };
   customer_login_code: {
     code: string;
@@ -98,7 +107,7 @@ export function renderEmail<T extends EmailTemplate>(
       };
     }
     case 'purchase_receipt': {
-      const { productTitle, amount, fulfilmentUrl, thankYouMessage } =
+      const { productTitle, amount, fulfilmentUrl, thankYouMessage, portalUrl } =
         data as TemplateData['purchase_receipt'];
       return {
         subject: `Your purchase: ${productTitle}`,
@@ -107,12 +116,20 @@ export function renderEmail<T extends EmailTemplate>(
           `<p>You bought <strong>${productTitle}</strong> for ${amount}.</p>` +
             (thankYouMessage ? `<p>${thankYouMessage}</p>` : '') +
             `<p>${button(fulfilmentUrl, 'Access your purchase')}</p>` +
-            `<p style="color:#888;font-size:12px">For your security, opening the link asks you to confirm this email address with a one-time code — so only you can access your files. Keep this email; you can return to the link anytime to re-download.</p>`,
+            `<p style="color:#888;font-size:12px">For your security, opening the link asks you to confirm this email address with a one-time code — so only you can access your files. Keep this email; you can return to the link anytime to re-download.</p>` +
+            (portalUrl
+              ? `<div style="margin-top:24px;padding-top:20px;border-top:1px solid #eee">` +
+                `<p style="color:#555;font-size:13px;margin:0 0 10px">All your purchases from this creator in one place:</p>` +
+                `${button(portalUrl, 'View all my purchases')}` +
+                `<p style="color:#aaa;font-size:11px;margin-top:8px">Your email is pre-filled — just confirm it with a quick code.</p>` +
+                `</div>`
+              : ''),
         ),
         text:
           `Thanks for buying ${productTitle} (${amount}). Access your purchase: ${fulfilmentUrl}` +
           `\n\nFor your security, you'll confirm this email with a one-time code to unlock your files — so only you can open them.` +
-          (thankYouMessage ? `\n\n${thankYouMessage}` : ''),
+          (thankYouMessage ? `\n\n${thankYouMessage}` : '') +
+          (portalUrl ? `\n\nView all your purchases: ${portalUrl}` : ''),
       };
     }
     case 'broadcast': {
@@ -129,18 +146,25 @@ export function renderEmail<T extends EmailTemplate>(
       };
     }
     case 'booking_confirmation': {
-      const { title, whenText, meetingUrl, manageUrl } = data as TemplateData['booking_confirmation'];
+      const { title, whenText, meetingUrl, manageUrl, portalUrl } = data as TemplateData['booking_confirmation'];
       return {
         subject: `Booking confirmed: ${title}`,
         html: layout(
           'Your booking is confirmed',
           `<p><strong>${title}</strong></p><p>${whenText}</p>` +
             (meetingUrl ? `<p>${button(meetingUrl, 'Join the meeting')}</p>` : '') +
-            `<p style="font-size:13px"><a href="${manageUrl}">Reschedule or cancel</a></p>`,
+            `<p style="font-size:13px"><a href="${manageUrl}">Reschedule or cancel</a></p>` +
+            (portalUrl
+              ? `<div style="margin-top:24px;padding-top:20px;border-top:1px solid #eee">` +
+                `<p style="color:#555;font-size:13px;margin:0 0 10px">View all your purchases from this creator:</p>` +
+                `${button(portalUrl, 'View my purchases')}` +
+                `</div>`
+              : ''),
         ),
         text: `Booking confirmed: ${title}\n${whenText}` +
           (meetingUrl ? `\nMeeting: ${meetingUrl}` : '') +
-          `\nManage: ${manageUrl}`,
+          `\nManage: ${manageUrl}` +
+          (portalUrl ? `\n\nView all your purchases: ${portalUrl}` : ''),
       };
     }
     case 'customer_login_code': {
@@ -157,7 +181,7 @@ export function renderEmail<T extends EmailTemplate>(
       };
     }
     case 'booking_reminder': {
-      const { title, whenText, startsInText, meetingUrl, manageUrl } = data as TemplateData['booking_reminder'];
+      const { title, whenText, startsInText, meetingUrl, manageUrl, portalUrl } = data as TemplateData['booking_reminder'];
       return {
         subject: `Reminder: ${title} is ${startsInText}`,
         html: layout(
@@ -165,11 +189,33 @@ export function renderEmail<T extends EmailTemplate>(
           `<p>This is a friendly reminder that <strong>${title}</strong> starts <strong>${startsInText}</strong>.</p>` +
             `<p>${whenText}</p>` +
             (meetingUrl ? `<p>${button(meetingUrl, 'Join the meeting')}</p>` : '') +
-            `<p style="font-size:13px"><a href="${manageUrl}">Reschedule or cancel</a></p>`,
+            `<p style="font-size:13px"><a href="${manageUrl}">Reschedule or cancel</a></p>` +
+            (portalUrl
+              ? `<div style="margin-top:24px;padding-top:20px;border-top:1px solid #eee">` +
+                `<p style="color:#555;font-size:13px;margin:0 0 10px">View all your purchases from this creator:</p>` +
+                `${button(portalUrl, 'View my purchases')}` +
+                `</div>`
+              : ''),
         ),
         text: `Reminder: ${title} is ${startsInText}.\n${whenText}` +
           (meetingUrl ? `\nMeeting: ${meetingUrl}` : '') +
-          `\nManage: ${manageUrl}`,
+          `\nManage: ${manageUrl}` +
+          (portalUrl ? `\n\nView all your purchases: ${portalUrl}` : ''),
+      };
+    }
+    case 'booking_cancelled': {
+      const { title, whenText, reason } = data as TemplateData['booking_cancelled'];
+      return {
+        subject: `Booking cancelled: ${title}`,
+        html: layout(
+          'Your booking has been cancelled',
+          `<p>Your booking for <strong>${title}</strong> (${whenText}) has been cancelled.</p>` +
+            (reason ? `<p style="color:#555">${reason}</p>` : '') +
+            `<p style="color:#888;font-size:12px">If you believe this was a mistake, please contact the creator directly.</p>`,
+        ),
+        text: `Your booking for ${title} (${whenText}) has been cancelled.` +
+          (reason ? `\n\n${reason}` : '') +
+          `\n\nIf you believe this was a mistake, please contact the creator directly.`,
       };
     }
     case 'login_code': {

@@ -205,6 +205,11 @@ function whenText(startAt: Date, zone: string): string {
   return DateTime.fromJSDate(startAt, { zone }).toFormat("cccc, LLL d 'at' h:mm a (ZZZZ)");
 }
 
+async function resolveCreatorUsername(creatorId: string): Promise<string | undefined> {
+  const profile = await CreatorProfileModel.findOne({ userId: creatorId }).select('username').lean();
+  return profile?.username;
+}
+
 /**
  * Create a booking. Free sessions confirm immediately + email. Paid sessions
  * reserve the slot as pending_payment and return a Stripe checkout URL; the
@@ -293,12 +298,43 @@ export async function createBooking(input: {
 }
 
 export async function sendBookingConfirmation(booking: BookingDoc, bt: BookingTypeDoc) {
-  await enqueueEmail(booking.buyerEmail, 'booking_confirmation', {
-    title: bt.title,
-    whenText: whenText(booking.startAt, booking.timezone),
-    meetingUrl: booking.meetingUrl || bt.meetingUrl || undefined,
-    manageUrl: `${env.APP_URL}/booking/${booking.manageToken}`,
-  });
+  const creatorUsername = await resolveCreatorUsername(String(booking.creatorId)).catch(() => undefined);
+  const portalUrl = creatorUsername
+    ? `${env.APP_URL}/${creatorUsername}/account?email=${encodeURIComponent(booking.buyerEmail)}`
+    : undefined;
+  const manageUrl = `${env.APP_URL}/booking/${booking.manageToken}`;
+  const wt = whenText(booking.startAt, booking.timezone);
+  const meetingUrl = booking.meetingUrl || bt.meetingUrl || undefined;
+
+  // Creators can customize the confirmation email per booking type, same as products.
+  if (bt.confirmSubject?.trim() || bt.confirmBody?.trim()) {
+    const personalise = (t: string) =>
+      t
+        .replace(/\[Booking Title\]/g, bt.title)
+        .replace(/\[When\]/g, wt)
+        .replace(/\[Meeting Link\]/g, meetingUrl ?? '')
+        .replace(/\[Manage Link\]/g, manageUrl)
+        .replace(/\[My Username\]/g, creatorUsername ?? '');
+    const subject = personalise(bt.confirmSubject?.trim() || `Booking confirmed: ${bt.title}`);
+    const bodyText = personalise(
+      bt.confirmBody?.trim() ||
+        `Your booking for ${bt.title} is confirmed.\n\n${wt}` +
+          (meetingUrl ? `\n\nMeeting link: ${meetingUrl}` : '') +
+          `\n\nManage your booking: ${manageUrl}`,
+    );
+    await enqueueEmail(booking.buyerEmail, 'broadcast', {
+      subject,
+      bodyText: bodyText + (portalUrl ? `\n\nView all your purchases: ${portalUrl}` : ''),
+    });
+  } else {
+    await enqueueEmail(booking.buyerEmail, 'booking_confirmation', {
+      title: bt.title,
+      whenText: wt,
+      meetingUrl,
+      manageUrl,
+      portalUrl,
+    });
+  }
   await scheduleBookingReminder(booking);
 }
 
@@ -332,12 +368,17 @@ async function processBookingReminder(payload: Record<string, unknown>): Promise
   if (!bt) return;
   const mins = Math.round((booking.startAt.getTime() - Date.now()) / 60000);
   const startsInText = mins >= 90 ? `in about ${Math.round(mins / 60)} hours` : mins >= 45 ? 'in about an hour' : `in ${Math.max(1, mins)} minutes`;
+  const creatorUsername = await resolveCreatorUsername(String(booking.creatorId)).catch(() => undefined);
+  const portalUrl = creatorUsername
+    ? `${env.APP_URL}/${creatorUsername}/account?email=${encodeURIComponent(booking.buyerEmail)}`
+    : undefined;
   await enqueueEmail(booking.buyerEmail, 'booking_reminder', {
     title: bt.title,
     whenText: whenText(booking.startAt, booking.timezone),
     startsInText,
     meetingUrl: booking.meetingUrl || bt.meetingUrl || undefined,
     manageUrl: `${env.APP_URL}/booking/${booking.manageToken}`,
+    portalUrl,
   });
 }
 
@@ -407,6 +448,26 @@ export async function cancelBooking(token: string): Promise<void> {
   booking.cancelledAt = new Date();
   await booking.save();
   recordAudit({ action: 'booking.cancelled', actorType: 'anonymous', creatorId: String(booking.creatorId), targetType: 'booking', targetId: booking.id });
+}
+
+/**
+ * Cancel a confirmed booking that was paid via a Stripe/PayPal session, and
+ * notify the buyer. Called when a booking order is refunded so the slot is freed
+ * and the buyer isn't left with a confirmed session for a refunded payment.
+ */
+export async function cancelBookingByCheckoutSession(stripeCheckoutSessionId: string): Promise<void> {
+  const booking = await BookingModel.findOne({ stripeCheckoutSessionId });
+  if (!booking || booking.status === 'cancelled') return;
+  const bt = await BookingTypeModel.findById(booking.bookingTypeId);
+  booking.status = 'cancelled';
+  booking.cancelledAt = new Date();
+  await booking.save();
+  await enqueueEmail(booking.buyerEmail, 'booking_cancelled', {
+    title: bt?.title ?? 'Session',
+    whenText: whenText(booking.startAt, booking.timezone),
+    reason: 'Your payment was refunded, so this booking has been cancelled.',
+  }).catch(() => {});
+  recordAudit({ action: 'booking.cancelled_refund', actorType: 'system', creatorId: String(booking.creatorId), targetType: 'booking', targetId: booking.id });
 }
 
 // A paid booking sits in `pending_payment` while the buyer is at Stripe. If they
