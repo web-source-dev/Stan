@@ -7,7 +7,7 @@ import { IconCalendar, IconExternal } from '@/components/icons';
 
 interface BookingView {
   id: string; title: string; startAt: string; endAt: string; timezone: string;
-  status: string; meetingUrl: string; whenText: string;
+  status: string; displayStatus?: string; meetingUrl: string; whenText: string;
 }
 
 export default function ManageBookingPage({ params }: { params: Promise<{ token: string }> }) {
@@ -39,7 +39,8 @@ export default function ManageBookingPage({ params }: { params: Promise<{ token:
   }
   if (!booking) return <PageLoader />;
 
-  const tone = booking.status === 'confirmed' ? 'success' : booking.status === 'cancelled' ? 'danger' : 'warn';
+  const label = booking.displayStatus ?? booking.status;
+  const tone = label === 'confirmed' || label === 'in progress' ? 'success' : label === 'cancelled' ? 'danger' : label === 'pending payment' ? 'warn' : 'neutral';
 
   return (
     <div className="mx-auto flex min-h-screen max-w-md items-center px-5">
@@ -50,7 +51,7 @@ export default function ManageBookingPage({ params }: { params: Promise<{ token:
           </span>
           <div>
             <h1 className="text-lg font-bold tracking-tight">{booking.title}</h1>
-            <Badge tone={tone} dot>{booking.status}</Badge>
+            <Badge tone={tone} dot>{label}</Badge>
           </div>
         </div>
 
@@ -58,7 +59,7 @@ export default function ManageBookingPage({ params }: { params: Promise<{ token:
           {booking.whenText}
         </p>
 
-        {booking.status === 'confirmed' && booking.meetingUrl && (
+        {(booking.status === 'confirmed' || booking.displayStatus === 'in progress') && booking.meetingUrl && (
           <a href={booking.meetingUrl} target="_blank" rel="noreferrer"
             className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg bg-brand-gradient px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:shadow-glow">
             <IconExternal size={16} /> Join meeting

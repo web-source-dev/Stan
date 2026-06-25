@@ -16,11 +16,15 @@ export default function SignupPage() {
   const [busy, setBusy] = useState(false);
   const [ref, setRef] = useState<string | undefined>();
 
-  // Capture a referral code from the link and record the click.
+const REF_STORAGE_KEY = 'stan_ref_code';
+
   useEffect(() => {
-    const code = new URLSearchParams(window.location.search).get('ref') ?? undefined;
+    const fromUrl = new URLSearchParams(window.location.search).get('ref')?.trim().toLowerCase();
+    const stored = sessionStorage.getItem(REF_STORAGE_KEY) ?? undefined;
+    const code = fromUrl || stored;
     if (!code) return;
     setRef(code);
+    sessionStorage.setItem(REF_STORAGE_KEY, code);
     apiRequest('/api/referrals/track', { method: 'POST', body: { code } }).catch(() => {});
   }, []);
 
@@ -30,6 +34,7 @@ export default function SignupPage() {
     setBusy(true);
     try {
       await signup(email, password, ref);
+      sessionStorage.removeItem(REF_STORAGE_KEY);
       router.push('/onboarding');
     } catch (err) {
       setError(err instanceof ApiException ? err.message : 'Something went wrong');

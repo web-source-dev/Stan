@@ -2,7 +2,8 @@ import { connectDb, disconnectDb } from './config/db';
 import { logger } from './config/logger';
 import { startJobRunner, stopJobRunner } from './lib/jobRunner';
 import { registerBroadcastJobs } from './modules/broadcasts/broadcasts.service';
-import { registerBookingJobs } from './modules/bookings/bookings.service';
+import { startBookingMaintenance, registerBookingJobs } from './modules/bookings/bookings.service';
+import { startSubscriptionMaintenance } from './modules/subscription/subscription.service';
 
 /**
  * Optional standalone worker process. In the foundation phase the job runner
@@ -13,6 +14,8 @@ async function main() {
   await connectDb();
   registerBroadcastJobs();
   registerBookingJobs();
+  startBookingMaintenance();
+  startSubscriptionMaintenance();
   startJobRunner();
   logger.info('Worker process started');
 

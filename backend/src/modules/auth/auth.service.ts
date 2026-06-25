@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
 import { env } from '../../config/env';
 import { AppError } from '../../utils/AppError';
+import { attributeSignup } from '../referrals/referrals.service';
 import { UserModel, type UserDoc } from '../../models/User';
-import { ReferralModel } from '../../models/Referral';
 import { RefreshSessionModel } from '../../models/RefreshSession';
 import { AuthTokenModel } from '../../models/AuthToken';
 import { hashPassword, verifyPassword } from '../../lib/password';
@@ -10,6 +10,12 @@ import { signAccessToken, signRefreshToken, verifyRefreshToken } from '../../lib
 import { generateJti, generateOpaqueToken, hashToken } from '../../lib/tokens';
 import { enqueueEmail } from '../../lib/jobs';
 import { recordAudit } from '../../lib/audit';
+import {
+  activeTwoFactorMethods,
+  twoFactorRequired,
+  verifyTotpCode,
+  type TwoFactorMethod,
+} from '../../lib/totp';
 
 export interface RequestContext {
   ip?: string;
@@ -84,40 +90,49 @@ export async function signup(email: string, password: string, ctx: RequestContex
   // Only persist the referrer link when the code resolves to a real referral
   // record, so later subscription revenue can accrue commission to that creator.
   if (ref) {
-    try {
-      const referrer = await ReferralModel.findOneAndUpdate(
-        { code: ref.toLowerCase() },
-        { $inc: { signups: 1 }, $addToSet: { referredEmails: email.toLowerCase() } },
-      );
-      if (referrer) {
-        user.referredByCode = referrer.code;
-        await user.save();
-      }
-    } catch { /* ignore */ }
+    await attributeSignup(user, email, ref).catch(() => {});
   }
 
   const tokens = await issueSession(user, ctx);
   return { user: publicUser(user), tokens };
 }
 
-/** Issue a one-time 6-digit login code (2FA) and email it to the user. */
-async function createTwoFactorChallenge(user: UserDoc): Promise<{ id: string; code: string }> {
-  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-  // One active challenge per user.
+/** Issue a login challenge for enabled 2FA methods. */
+async function createTwoFactorChallenge(user: UserDoc): Promise<{
+  id: string;
+  code?: string;
+  methods: TwoFactorMethod[];
+}> {
+  const methods = activeTwoFactorMethods(user);
+  if (methods.length === 0) {
+    // Legacy accounts may only have twoFactorEnabled set.
+    if (user.twoFactorAuthenticator) methods.push('authenticator');
+    else methods.push('email');
+  }
+
   await AuthTokenModel.deleteMany({ userId: user._id, type: 'two_factor' });
+
+  let code: string | undefined;
+  let tokenHash = hashToken(crypto.randomBytes(16).toString('hex'));
+  if (methods.includes('email')) {
+    code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+    tokenHash = hashToken(code);
+    await enqueueEmail(user.email, 'login_code', { code }).catch(() => {});
+  }
+
   const token = await AuthTokenModel.create({
     userId: user._id,
     type: 'two_factor',
-    tokenHash: hashToken(code),
+    tokenHash,
     expiresAt: new Date(Date.now() + TWO_FACTOR_TTL_MS),
+    metadata: { methods },
   });
-  await enqueueEmail(user.email, 'login_code', { code }).catch(() => {});
-  return { id: token.id, code };
+  return { id: token.id, code, methods };
 }
 
 export type LoginResult =
   | { user: ReturnType<typeof publicUser>; tokens: SessionTokens }
-  | { twoFactorRequired: true; challengeId: string; devCode?: string };
+  | { twoFactorRequired: true; challengeId: string; methods: TwoFactorMethod[]; devCode?: string };
 
 export async function login(email: string, password: string, ctx: RequestContext): Promise<LoginResult> {
   const user = await UserModel.findOne({ email }).select('+passwordHash');
@@ -134,11 +149,16 @@ export async function login(email: string, password: string, ctx: RequestContext
     throw AppError.unauthorized('Invalid email or password');
   }
 
-  // Two-factor: password is correct, but require an emailed code before a session.
-  if (user.get('twoFactorEnabled')) {
+  // Two-factor: password is correct, but require verification before a session.
+  if (twoFactorRequired(user)) {
     const challenge = await createTwoFactorChallenge(user);
-    recordAudit({ action: 'auth.2fa_challenge', actorId: user.id, actorType: 'user', ...ctx });
-    return { twoFactorRequired: true, challengeId: challenge.id, ...(env.isProd ? {} : { devCode: challenge.code }) };
+    recordAudit({ action: 'auth.2fa_challenge', actorId: user.id, actorType: 'user', metadata: { methods: challenge.methods }, ...ctx });
+    return {
+      twoFactorRequired: true,
+      challengeId: challenge.id,
+      methods: challenge.methods,
+      ...(env.isProd || !challenge.code ? {} : { devCode: challenge.code }),
+    };
   }
 
   user.lastLoginAt = new Date();
@@ -149,27 +169,61 @@ export async function login(email: string, password: string, ctx: RequestContext
   return { user: publicUser(user), tokens };
 }
 
-/** Complete a 2FA login by verifying the emailed code, then issue a session. */
-export async function verifyTwoFactor(challengeId: string, code: string, ctx: RequestContext) {
+/** Complete a 2FA login with email code or authenticator TOTP. */
+export async function verifyTwoFactor(
+  challengeId: string,
+  code: string,
+  method: TwoFactorMethod,
+  ctx: RequestContext,
+) {
   const invalid = 'That code is invalid or has expired. Please log in again.';
   const token = await AuthTokenModel.findOne({ _id: challengeId, type: 'two_factor', usedAt: { $exists: false } }).catch(
     () => null,
   );
   if (!token || token.expiresAt.getTime() < Date.now()) throw AppError.badRequest(invalid);
-  if (token.tokenHash !== hashToken(code.trim())) throw AppError.badRequest('Incorrect code. Please try again.');
+
+  const methods = (token.metadata?.methods as TwoFactorMethod[] | undefined) ?? ['email'];
+  if (!methods.includes(method)) throw AppError.badRequest('That verification method is not available.');
+
+  const user = await UserModel.findById(token.userId).select('+totpSecret');
+  if (!user || user.status !== 'active') throw AppError.unauthorized('Account is not active');
+
+  const trimmed = code.trim().replace(/\s/g, '');
+  if (method === 'email') {
+    if (token.tokenHash !== hashToken(trimmed)) throw AppError.badRequest('Incorrect code. Please try again.');
+  } else {
+    if (!user.totpSecret || !verifyTotpCode(trimmed, user.totpSecret)) {
+      throw AppError.badRequest('Incorrect authenticator code. Please try again.');
+    }
+  }
 
   token.usedAt = new Date();
   await token.save();
 
-  const user = await UserModel.findById(token.userId);
-  if (!user || user.status !== 'active') throw AppError.unauthorized('Account is not active');
-
   user.lastLoginAt = new Date();
   await user.save();
-  recordAudit({ action: 'auth.login', actorId: user.id, actorType: 'user', ...ctx });
+  recordAudit({ action: 'auth.login', actorId: user.id, actorType: 'user', metadata: { twoFactorMethod: method }, ...ctx });
 
   const tokens = await issueSession(user, ctx);
   return { user: publicUser(user), tokens };
+}
+
+/** Resend the email login code for an active 2FA challenge. */
+export async function resendTwoFactorEmail(challengeId: string): Promise<void> {
+  const token = await AuthTokenModel.findOne({ _id: challengeId, type: 'two_factor', usedAt: { $exists: false } });
+  if (!token || token.expiresAt.getTime() < Date.now()) {
+    throw AppError.badRequest('Challenge expired. Please log in again.');
+  }
+  const methods = (token.metadata?.methods as TwoFactorMethod[] | undefined) ?? ['email'];
+  if (!methods.includes('email')) throw AppError.badRequest('Email verification is not enabled for this account.');
+
+  const user = await UserModel.findById(token.userId);
+  if (!user) throw AppError.badRequest('Challenge expired. Please log in again.');
+
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  token.tokenHash = hashToken(code);
+  await token.save();
+  await enqueueEmail(user.email, 'login_code', { code }).catch(() => {});
 }
 
 /**

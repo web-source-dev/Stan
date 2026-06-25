@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { DateTime } from 'luxon';
 import { AppError } from '../../utils/AppError';
 import { LeadModel, type LeadDoc } from '../../models/Lead';
 import { OrderModel } from '../../models/Order';
@@ -10,6 +11,7 @@ import { CourseModel, CourseLessonModel } from '../../models/Course';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { recordAudit } from '../../lib/audit';
 import { triggerFlows } from '../flows/flows.service';
+import { bookingDisplayStatus } from '../bookings/bookingDisplay';
 
 /** Split a free-text full name into first/last for the contact record. */
 function splitName(name?: string): { firstName: string; lastName: string } {
@@ -261,9 +263,10 @@ export async function getCustomerDetail(creatorId: string, leadId: string) {
   ]);
 
   // Resolve referenced product / course / booking-type titles in bulk.
-  const productIds = [...new Set([...orders.map((o) => String(o.productId)), ...entitlements.map((e) => String(e.productId))])];
+  const orderItemIds = [...new Set(orders.map((o) => String(o.productId)))];
+  const productIds = [...new Set([...orderItemIds, ...entitlements.map((e) => String(e.productId))])];
   const courseIds = [...new Set(enrollments.map((e) => String(e.courseId)))];
-  const btIds = [...new Set(bookings.map((b) => String(b.bookingTypeId)))];
+  const btIds = [...new Set([...bookings.map((b) => String(b.bookingTypeId)), ...orderItemIds])];
   const [products, courses, bts] = await Promise.all([
     ProductModel.find({ _id: { $in: productIds } }),
     CourseModel.find({ _id: { $in: courseIds } }),
@@ -272,6 +275,7 @@ export async function getCustomerDetail(creatorId: string, leadId: string) {
   const productMap = new Map(products.map((p) => [p.id, p]));
   const courseMap = new Map(courses.map((c) => [c.id, c]));
   const btTitle = new Map(bts.map((bt) => [bt.id, bt.title]));
+  const btMeetingUrl = new Map(bts.map((bt) => [bt.id, bt.meetingUrl ?? '']));
   const lessonCounts = new Map<string, number>();
   await Promise.all(
     courses.map(async (c) => lessonCounts.set(c.id, await CourseLessonModel.countDocuments({ courseId: c.id }))),
@@ -317,7 +321,11 @@ export async function getCustomerDetail(creatorId: string, leadId: string) {
     },
     orders: orders.map((o) => ({
       id: o.id,
-      productTitle: productMap.get(String(o.productId))?.title ?? 'Product',
+      productTitle:
+        productMap.get(String(o.productId))?.title
+        ?? courseMap.get(String(o.productId))?.title
+        ?? btTitle.get(String(o.productId))
+        ?? 'Purchase',
       amountCents: o.amountCents,
       currency: o.currency,
       status: o.status,
@@ -355,9 +363,12 @@ export async function getCustomerDetail(creatorId: string, leadId: string) {
       id: b.id,
       title: btTitle.get(String(b.bookingTypeId)) ?? 'Session',
       startAt: b.startAt,
+      endAt: b.endAt,
       timezone: b.get('timezone') || 'UTC',
+      whenText: DateTime.fromJSDate(b.startAt).setZone(b.get('timezone') || 'UTC').toFormat("ccc, LLL d 'at' h:mm a"),
       status: b.status,
-      meetingUrl: b.get('meetingUrl') || '',
+      displayStatus: bookingDisplayStatus(b),
+      meetingUrl: b.get('meetingUrl') || btMeetingUrl.get(String(b.bookingTypeId)) || '',
       upcoming: b.startAt.getTime() > Date.now(),
     })),
     monthly: buildMonthlySpend(paid.map((o) => ({ amountCents: o.amountCents, when: o.paidAt ?? (o.get('createdAt') as Date) }))),

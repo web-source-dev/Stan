@@ -58,6 +58,7 @@ interface PortalBooking {
   title: string;
   whenText: string;
   status: string;
+  displayStatus?: string;
   meetingUrl: string;
   manageToken: string;
   upcoming: boolean;
@@ -753,8 +754,9 @@ export function BookingRow({ b, store }: { b: PortalBooking; store?: string }) {
         <div className="truncate text-sm text-neutral-500">
           {store && <span className="font-medium text-neutral-600">{store} · </span>}
           {b.whenText}
-          {b.status === 'pending_payment' && ' · awaiting payment'}
-          {!b.upcoming && ' · past'}
+          {(b.displayStatus ?? b.status) === 'pending payment' && ' · awaiting payment'}
+          {(b.displayStatus ?? b.status) === 'completed' && ' · completed'}
+          {(b.displayStatus ?? b.status) === 'in progress' && ' · happening now'}
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">

@@ -5,6 +5,7 @@ import { logger } from './config/logger';
 import { startJobRunner, stopJobRunner } from './lib/jobRunner';
 import { registerBroadcastJobs } from './modules/broadcasts/broadcasts.service';
 import { startBookingMaintenance, stopBookingMaintenance, registerBookingJobs } from './modules/bookings/bookings.service';
+import { startSubscriptionMaintenance, stopSubscriptionMaintenance } from './modules/subscription/subscription.service';
 
 async function main() {
   await connectDb();
@@ -25,11 +26,13 @@ async function main() {
   // separate worker process later via `npm run worker`.
   startJobRunner();
   startBookingMaintenance();
+  startSubscriptionMaintenance();
 
   const shutdown = async (signal: string) => {
     logger.info(`${signal} received, shutting down`);
     stopJobRunner();
     stopBookingMaintenance();
+    stopSubscriptionMaintenance();
     server.close();
     await disconnectDb();
     process.exit(0);

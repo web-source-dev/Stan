@@ -15,9 +15,11 @@ interface Referral {
   earningsCents: number;
   referredCount: number;
 }
+interface ReferredCreator { email: string; signedUpAt: string; code: string; }
 
-const PLAN_MONTHLY = 30; // reference subscription price for the calculator
-const fmtUsd = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`;
+const PLAN_MONTHLY = 29; // pro monthly reference price for the calculator
+const fmtUsd = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+const fmtMoney = (cents: number) => `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /* ------------------------------------------------------------------ */
 /* Phone mockups for "3 easy ways to earn"                             */
@@ -130,6 +132,7 @@ const WAYS = [
 function ReferralsView() {
   const { authedRequest } = useAuth();
   const [ref, setRef] = useState<Referral | null>(null);
+  const [referred, setReferred] = useState<ReferredCreator[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -137,8 +140,12 @@ function ReferralsView() {
 
   const load = useCallback(async () => {
     try {
-      const res = await authedRequest<{ referral: Referral | null }>('/api/referrals');
+      const [res, referredRes] = await Promise.all([
+        authedRequest<{ referral: Referral | null }>('/api/referrals'),
+        authedRequest<{ referred: ReferredCreator[] }>('/api/referrals/referred'),
+      ]);
       setRef(res.referral);
+      setReferred(referredRes.referred);
     } finally { setLoaded(true); }
   }, [authedRequest]);
   useEffect(() => { void load(); }, [load]);
@@ -233,7 +240,7 @@ function ReferralsView() {
                 <div className="mt-3 flex flex-wrap gap-5 text-sm">
                   <span className="text-neutral-500">Clicks <span className="font-bold text-[#1a1c3a]">{ref.clicks}</span></span>
                   <span className="text-neutral-500">Signups <span className="font-bold text-[#1a1c3a]">{ref.signups}</span></span>
-                  <span className="text-neutral-500">Referred <span className="font-bold text-[#1a1c3a]">{ref.referredCount}</span></span>
+                  <span className="text-neutral-500">Earned <span className="font-bold text-emerald-600">{fmtMoney(ref.earningsCents)}</span></span>
                   <button onClick={regenerate} disabled={busy} className="font-bold text-brand-600 hover:text-brand-700">New code</button>
                 </div>
               </div>
@@ -264,6 +271,23 @@ function ReferralsView() {
           </div>
         </div>
       </div>
+
+      {ref && referred.length > 0 && (
+        <div className="mt-5 rounded-3xl bg-white p-8 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">
+          <h2 className="text-xl font-bold tracking-tight text-[#1a1c3a]">Your referrals</h2>
+          <p className="mt-1 text-sm text-neutral-500">Creators who signed up with your link. You earn {Math.round(rate * 100)}% on their subscription payments.</p>
+          <ul className="mt-4 divide-y divide-line/70">
+            {referred.map((r) => (
+              <li key={r.email} className="flex items-center justify-between gap-3 py-3 text-sm">
+                <span className="font-medium text-[#1a1c3a]">{r.email}</span>
+                <span className="shrink-0 text-neutral-400">
+                  Joined {new Date(r.signedUpAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* 3 ways to earn */}
       <div className="mt-5 rounded-3xl bg-white p-8 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">

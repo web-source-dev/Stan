@@ -16,9 +16,9 @@ import {
   type SubscriptionDoc,
 } from '../../models/Subscription';
 import { UserModel } from '../../models/User';
-import { ReferralModel } from '../../models/Referral';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { InvoiceModel, type InvoiceDoc } from '../../models/Invoice';
+import { createSubscriptionInvoice, nextInvoiceNumber } from './subscription.service';
 import { AppError } from '../../utils/AppError';
 import { env } from '../../config/env';
 import { requireStripe } from '../../lib/stripe';
@@ -26,24 +26,6 @@ import { requireStripe } from '../../lib/stripe';
 // Mounted at /api/subscription.
 export const subscriptionRouter = Router();
 subscriptionRouter.use(requireAuth);
-
-/**
- * Credit the referrer a lifetime commission when a referred creator pays for a
- * plan. Best-effort: never blocks the subscription change.
- */
-async function accrueReferralCommission(userId: string, planCents: number): Promise<void> {
-  if (planCents <= 0) return;
-  try {
-    const user = await UserModel.findById(userId);
-    if (!user?.referredByCode) return;
-    const ref = await ReferralModel.findOne({ code: user.referredByCode });
-    if (!ref) return;
-    const commission = Math.round(planCents * (ref.commissionRate ?? 0));
-    if (commission > 0) {
-      await ReferralModel.updateOne({ _id: ref._id }, { $inc: { earningsCents: commission } });
-    }
-  } catch { /* never block billing on a commission accrual error */ }
-}
 
 function publicSub(s: SubscriptionDoc) {
   const planKey = normalizePlan(s.plan);
@@ -91,34 +73,6 @@ const STORAGE_PACK_CATALOGUE = (Object.keys(STORAGE_PACKS) as StoragePackKey[]).
   key,
   ...STORAGE_PACKS[key],
 }));
-
-/** Next sequential invoice number for a user, e.g. INV-2026-0003. */
-async function nextInvoiceNumber(userId: string): Promise<string> {
-  const count = await InvoiceModel.countDocuments({ userId });
-  return `INV-${new Date().getFullYear()}-${String(count + 1).padStart(4, '0')}`;
-}
-
-/** Record a paid invoice for a subscription charge. */
-async function createSubscriptionInvoice(userId: string, planKey: PlanKey, periodEnd?: Date | null): Promise<InvoiceDoc | null> {
-  const plan = PLANS[planKey];
-  if (plan.cents <= 0) return null; // free plan → no invoice
-  const months = plan.interval === 'year' ? 12 : 1;
-  const periodStart = new Date();
-  return InvoiceModel.create({
-    userId,
-    number: await nextInvoiceNumber(userId),
-    kind: 'subscription',
-    description: `${plan.label} plan — ${plan.interval === 'year' ? 'Yearly' : 'Monthly'}`,
-    planKey,
-    interval: plan.interval,
-    amountCents: plan.cents,
-    currency: 'usd',
-    status: 'paid',
-    periodStart,
-    periodEnd: periodEnd ?? new Date(periodStart.getTime() + months * 30 * 24 * 60 * 60 * 1000),
-    paidAt: periodStart,
-  });
-}
 
 function publicInvoice(inv: InvoiceDoc) {
   return {
@@ -217,7 +171,8 @@ subscriptionRouter.post(
   asyncHandler(async (req, res) => {
     const sub = await getOrCreate(req.user!.id);
     const plan = req.body.plan as PlanKey;
-    const wasPaidActive = sub.status === 'active' && PLANS[normalizePlan(sub.plan)].tier !== 'free';
+    const prevPlanKey = normalizePlan(sub.plan);
+    const wasPaidActive = sub.status === 'active' && PLANS[prevPlanKey].tier !== 'free';
     sub.plan = plan;
     sub.stanleyAddon = PLANS[plan].tier === 'premium';
     sub.cancelAtPeriodEnd = false; // (re)subscribing clears any scheduled cancel
@@ -236,13 +191,8 @@ subscriptionRouter.post(
     }
     await sub.save();
 
-    // Accrue referral commission only on a genuine first transition into a paid
-    // active plan (not when already on a paid plan, and not for free).
-    if (plan !== 'free' && !wasPaidActive) {
-      await accrueReferralCommission(req.user!.id, PLANS[plan].cents);
-    }
-    // Record an invoice for the charge that just activated this paid plan.
-    if (plan !== 'free') {
+    // Bill (and credit referral commission) when activating paid or switching paid plans.
+    if (plan !== 'free' && (prevPlanKey !== plan || !wasPaidActive)) {
       await createSubscriptionInvoice(req.user!.id, plan, sub.currentPeriodEnd).catch(() => {});
     }
     res.json({ subscription: publicSub(sub) });

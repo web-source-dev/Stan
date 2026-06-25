@@ -25,8 +25,20 @@ authRouter.post('/login', authLimiter, validate({ body: loginSchema }), asyncHan
 authRouter.post(
   '/login/verify-2fa',
   authLimiter,
-  validate({ body: z.object({ challengeId: z.string().min(1).max(64), code: z.string().min(4).max(10) }) }),
+  validate({
+    body: z.object({
+      challengeId: z.string().min(1).max(64),
+      code: z.string().min(4).max(10),
+      method: z.enum(['email', 'authenticator']),
+    }),
+  }),
   asyncHandler(ctrl.verifyTwoFactor),
+);
+authRouter.post(
+  '/login/resend-2fa',
+  authLimiter,
+  validate({ body: z.object({ challengeId: z.string().min(1).max(64) }) }),
+  asyncHandler(ctrl.resendTwoFactor),
 );
 authRouter.post('/refresh', asyncHandler(ctrl.refresh));
 authRouter.post('/logout', asyncHandler(ctrl.logout));

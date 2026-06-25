@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { Types } from 'mongoose';
 import { DateTime } from 'luxon';
+import { bookingDisplayStatus } from '../bookings/bookingDisplay';
 import { env } from '../../config/env';
 import { AppError } from '../../utils/AppError';
 import { hashToken } from '../../lib/tokens';
@@ -181,14 +182,17 @@ export async function getPortalDashboard(creatorId: string, email: string) {
   const bookingTypeIds = [...new Set(bookings.map((b) => String(b.bookingTypeId)))];
   const bts = await BookingTypeModel.find({ _id: { $in: bookingTypeIds } });
   const btTitle = new Map(bts.map((bt) => [bt.id, bt.title]));
+  const btMeetingUrl = new Map(bts.map((bt) => [bt.id, bt.meetingUrl ?? '']));
   const bookingList = bookings.map((b) => ({
     id: b.id,
     title: btTitle.get(String(b.bookingTypeId)) ?? 'Session',
     startAt: b.startAt,
+    endAt: b.endAt,
     timezone: b.timezone,
     whenText: DateTime.fromJSDate(b.startAt).setZone(b.timezone || 'UTC').toFormat("ccc, LLL d 'at' h:mm a"),
     status: b.status,
-    meetingUrl: b.meetingUrl || '',
+    displayStatus: bookingDisplayStatus(b),
+    meetingUrl: b.meetingUrl || btMeetingUrl.get(String(b.bookingTypeId)) || '',
     manageToken: b.manageToken,
     upcoming: b.startAt.getTime() > Date.now(),
   }));

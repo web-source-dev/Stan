@@ -10,6 +10,7 @@ import { AppError } from '../../utils/AppError';
 import { recordAudit } from '../../lib/audit';
 import { env } from '../../config/env';
 import { renderEmail, type EmailTemplate } from '../../lib/email';
+import * as twoFactorService from './twoFactor.service';
 
 // Account-level settings (mounted at /api/account).
 export const accountRouter = Router();
@@ -70,9 +71,10 @@ const prefsSchema = z.object(
 accountRouter.get(
   '/notifications',
   asyncHandler(async (req, res) => {
-    const user = await UserModel.findById(req.user!.id).select('notificationPrefs twoFactorEnabled');
+    const user = await UserModel.findById(req.user!.id).select('notificationPrefs twoFactorEnabled twoFactorEmail twoFactorAuthenticator');
     if (!user) throw AppError.notFound('User not found');
-    res.json({ prefs: user.get('notificationPrefs'), twoFactorEnabled: user.get('twoFactorEnabled') });
+    const status = await twoFactorService.getTwoFactorStatus(req.user!.id);
+    res.json({ prefs: user.get('notificationPrefs'), twoFactorEnabled: status.enabled, twoFactor: status });
   }),
 );
 
@@ -90,15 +92,67 @@ accountRouter.patch(
   }),
 );
 
+accountRouter.get(
+  '/two-factor',
+  asyncHandler(async (req, res) => {
+    res.json(await twoFactorService.getTwoFactorStatus(req.user!.id));
+  }),
+);
+
+accountRouter.post(
+  '/two-factor/email',
+  validate({ body: z.object({ enabled: z.boolean(), password: z.string().min(1) }) }),
+  asyncHandler(async (req, res) => {
+    res.json(await twoFactorService.setEmailTwoFactor(req.user!.id, req.body.enabled, req.body.password));
+  }),
+);
+
+accountRouter.post(
+  '/two-factor/authenticator/setup',
+  validate({ body: z.object({ password: z.string().min(1) }) }),
+  asyncHandler(async (req, res) => {
+    res.json(await twoFactorService.startAuthenticatorSetup(req.user!.id, req.body.password));
+  }),
+);
+
+accountRouter.post(
+  '/two-factor/authenticator/cancel',
+  asyncHandler(async (req, res) => {
+    await twoFactorService.cancelAuthenticatorSetup(req.user!.id);
+    res.json({ ok: true });
+  }),
+);
+
+accountRouter.post(
+  '/two-factor/authenticator/confirm',
+  validate({
+    body: z.object({
+      code: z.string().min(4).max(10),
+      secret: z.string().min(16).max(128).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    res.json(await twoFactorService.confirmAuthenticatorSetup(req.user!.id, req.body.code, req.body.secret));
+  }),
+);
+
+accountRouter.post(
+  '/two-factor/authenticator/disable',
+  validate({ body: z.object({ password: z.string().min(1), code: z.string().min(4).max(10) }) }),
+  asyncHandler(async (req, res) => {
+    res.json(await twoFactorService.disableAuthenticator(req.user!.id, req.body.password, req.body.code));
+  }),
+);
+
+/** @deprecated Use /two-factor/email instead */
 accountRouter.post(
   '/two-factor',
-  validate({ body: z.object({ enabled: z.boolean() }) }),
+  validate({ body: z.object({ enabled: z.boolean(), password: z.string().min(1).optional() }) }),
   asyncHandler(async (req, res) => {
-    const user = await UserModel.findById(req.user!.id);
-    if (!user) throw AppError.notFound('User not found');
-    user.set('twoFactorEnabled', req.body.enabled);
-    await user.save();
-    res.json({ twoFactorEnabled: user.get('twoFactorEnabled') });
+    const password = req.body.password ?? '';
+    if (!password) throw AppError.badRequest('Password is required to change two-factor settings.');
+    const status = await twoFactorService.setEmailTwoFactor(req.user!.id, req.body.enabled, password);
+    res.json({ twoFactorEnabled: status.enabled, twoFactor: status });
   }),
 );
 

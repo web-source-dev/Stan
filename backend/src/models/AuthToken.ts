@@ -15,6 +15,7 @@ const authTokenSchema = new Schema(
     tokenHash: { type: String, required: true, index: true },
     expiresAt: { type: Date, required: true },
     usedAt: { type: Date },
+    metadata: { type: Schema.Types.Mixed },
   },
   { timestamps: true },
 );

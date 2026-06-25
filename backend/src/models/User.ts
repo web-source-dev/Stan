@@ -1,4 +1,4 @@
-import { Schema, model, type InferSchemaType, type HydratedDocument } from 'mongoose';
+import { Schema, model, Types, type InferSchemaType, type HydratedDocument } from 'mongoose';
 
 export const USER_ROLES = ['creator', 'admin'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
@@ -34,8 +34,15 @@ const userSchema = new Schema(
     // The referral code (another creator's) that this account signed up under.
     // Drives lifetime commission on this creator's subscription revenue.
     referredByCode: { type: String, default: '', index: true },
+    // Stable referrer link — survives referral-code regeneration.
+    referredByCreatorId: { type: Types.ObjectId, ref: 'User', index: true },
 
     twoFactorEnabled: { type: Boolean, default: false },
+    // Per-method 2FA (email OTP and/or authenticator app). Legacy twoFactorEnabled
+    // is kept in sync and still honored when the new flags are unset.
+    twoFactorEmail: { type: Boolean, default: false },
+    twoFactorAuthenticator: { type: Boolean, default: false },
+    totpSecret: { type: String, default: '', select: false },
 
     // Email notification preferences surfaced in Settings → Email Notifications.
     notificationPrefs: {

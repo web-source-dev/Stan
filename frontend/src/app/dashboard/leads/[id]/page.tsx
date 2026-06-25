@@ -12,6 +12,7 @@ import {
   IconCalendar, IconBook, IconCheckCircle,
 } from '@/components/icons';
 import { cn } from '@/lib/cn';
+import { SpendChart } from '@/components/portal/ui';
 
 /* ------------------------------------------------------------------ */
 /* Types + helpers                                                     */
@@ -37,28 +38,28 @@ interface CustomerDetail {
   }[];
   products: { id: string; title: string; coverImageUrl: string; downloadCount: number; lastAccessedAt: string | null; grantedAt: string; revoked: boolean }[];
   courses: { id: string; title: string; coverImageUrl: string; completed: number; total: number; revoked: boolean }[];
-  bookings: { id: string; title: string; startAt: string; timezone: string; status: string; meetingUrl: string; upcoming: boolean }[];
+  bookings: { id: string; title: string; startAt: string; timezone: string; whenText: string; status: string; displayStatus: string; meetingUrl: string; upcoming: boolean }[];
   monthly: { month: string; spentCents: number; orders: number }[];
 }
 
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'long', day: '2-digit', year: 'numeric' });
 }
-function fmtDateTime(iso: string) {
-  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
-}
 function fmtMoney(cents: number) {
   return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 }
-function monthLabel(key: string) {
-  return new Date(`${key}-01T00:00:00`).toLocaleDateString('en-US', { month: 'short' });
-}
-
 const STATUS_TONE: Record<string, string> = {
   paid: 'bg-emerald-50 text-emerald-700',
   refunded: 'bg-amber-50 text-amber-700',
   pending: 'bg-neutral-100 text-neutral-600',
   failed: 'bg-red-50 text-red-700',
+};
+const BOOKING_TONE: Record<string, string> = {
+  confirmed: 'bg-emerald-50 text-emerald-700',
+  'in progress': 'bg-brand-50 text-brand-700',
+  completed: 'bg-neutral-100 text-neutral-500',
+  cancelled: 'bg-red-50 text-red-600',
+  'pending payment': 'bg-amber-50 text-amber-700',
 };
 
 function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
@@ -79,29 +80,6 @@ function Section({ title, count, children }: { title: string; count?: number; ch
         {count !== undefined && <span className="rounded-full bg-surface-muted px-2 py-0.5 text-xs font-semibold text-neutral-500">{count}</span>}
       </h3>
       {children}
-    </div>
-  );
-}
-
-function SpendChart({ monthly }: { monthly: CustomerDetail['monthly'] }) {
-  const max = Math.max(1, ...monthly.map((m) => m.spentCents));
-  return (
-    <div className="rounded-2xl border border-line bg-white p-4 shadow-[0_1px_3px_rgba(15,15,25,0.04)]">
-      <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-400">Spend — last 12 months</div>
-      <div className="flex h-32 items-end gap-1.5">
-        {monthly.map((m) => {
-          const h = Math.round((m.spentCents / max) * 100);
-          return (
-            <div key={m.month} className="group flex flex-1 flex-col items-center justify-end gap-1" title={`${monthLabel(m.month)}: ${fmtMoney(m.spentCents)} · ${m.orders} order${m.orders === 1 ? '' : 's'}`}>
-              <div
-                className={cn('w-full rounded-t-md transition', m.spentCents > 0 ? 'bg-brand-500 group-hover:bg-brand-600' : 'bg-surface-muted')}
-                style={{ height: `${Math.max(h, m.spentCents > 0 ? 6 : 2)}%` }}
-              />
-              <span className="text-[9px] text-neutral-400">{monthLabel(m.month)}</span>
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -194,7 +172,9 @@ function CustomerDetailContent({ id }: { id: string }) {
         )}
 
         {/* Spend chart */}
-        <div className="mt-5"><SpendChart monthly={data.monthly} /></div>
+        <div className="mt-5">
+          <SpendChart monthly={data.monthly} cur={data.summary.currency} title="Spend · last 12 months" />
+        </div>
 
         {/* Orders */}
         <Section title="Orders" count={data.orders.length}>
@@ -282,11 +262,11 @@ function CustomerDetailContent({ id }: { id: string }) {
                   <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-brand-50 text-brand-600"><IconCalendar size={16} /></span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold text-[#1a1c3a]">{b.title}</span>
-                    <span className="text-xs text-neutral-400">{fmtDateTime(b.startAt)} · {b.timezone}</span>
+                    <span className="text-xs text-neutral-400">{b.whenText} · {b.timezone}</span>
                   </span>
                   <span className="flex shrink-0 items-center gap-2">
-                    <span className={cn('rounded-full px-2 py-0.5 text-xs font-semibold capitalize', b.upcoming ? 'bg-emerald-50 text-emerald-700' : 'bg-neutral-100 text-neutral-500')}>{b.status}</span>
-                    {b.meetingUrl && <a href={b.meetingUrl} target="_blank" rel="noreferrer" className="text-neutral-400 hover:text-brand-600"><IconExternal size={14} /></a>}
+                    <span className={cn('rounded-full px-2 py-0.5 text-xs font-semibold capitalize', BOOKING_TONE[b.displayStatus] ?? 'bg-neutral-100 text-neutral-600')}>{b.displayStatus}</span>
+                    {b.meetingUrl && b.upcoming && <a href={b.meetingUrl} target="_blank" rel="noreferrer" className="text-neutral-400 hover:text-brand-600"><IconExternal size={14} /></a>}
                   </span>
                 </li>
               ))}

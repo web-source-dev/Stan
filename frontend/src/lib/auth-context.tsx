@@ -9,10 +9,13 @@ interface AuthResponse {
   accessToken: string;
 }
 
+export type TwoFactorMethod = 'email' | 'authenticator';
+
 /** Login may return a session, OR a 2FA challenge that must be verified next. */
 export interface LoginResult {
   twoFactorRequired?: boolean;
   challengeId?: string;
+  methods?: TwoFactorMethod[];
   devCode?: string;
 }
 
@@ -20,8 +23,10 @@ interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<LoginResult>;
-  /** Complete a 2FA login with the emailed code. */
-  verifyTwoFactor: (challengeId: string, code: string) => Promise<void>;
+  /** Complete a 2FA login with email code or authenticator TOTP. */
+  verifyTwoFactor: (challengeId: string, code: string, method: TwoFactorMethod) => Promise<void>;
+  /** Resend the email login code for an active 2FA challenge. */
+  resendTwoFactorEmail: (challengeId: string) => Promise<void>;
   signup: (email: string, password: string, ref?: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
@@ -77,18 +82,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       body: { email, password },
     });
     if (res.twoFactorRequired) {
-      return { twoFactorRequired: true, challengeId: res.challengeId, devCode: res.devCode };
+      return {
+        twoFactorRequired: true,
+        challengeId: res.challengeId,
+        methods: res.methods ?? ['email'],
+        devCode: res.devCode,
+      };
     }
     setSession(res);
     return {};
   }, []);
 
-  const verifyTwoFactor = useCallback(async (challengeId: string, code: string) => {
+  const verifyTwoFactor = useCallback(async (challengeId: string, code: string, method: TwoFactorMethod) => {
     const res = await apiRequest<AuthResponse>('/api/auth/login/verify-2fa', {
       method: 'POST',
-      body: { challengeId, code },
+      body: { challengeId, code, method },
     });
     setSession(res);
+  }, []);
+
+  const resendTwoFactorEmail = useCallback(async (challengeId: string) => {
+    await apiRequest('/api/auth/login/resend-2fa', { method: 'POST', body: { challengeId } });
   }, []);
 
   const signup = useCallback(async (email: string, password: string, ref?: string) => {
@@ -136,7 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, login, verifyTwoFactor, signup, logout, refreshUser, authedRequest }}
+      value={{ user, loading, login, verifyTwoFactor, resendTwoFactorEmail, signup, logout, refreshUser, authedRequest }}
     >
       {children}
     </AuthContext.Provider>

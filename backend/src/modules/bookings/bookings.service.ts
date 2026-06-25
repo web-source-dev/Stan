@@ -8,10 +8,13 @@ import { OrderModel } from '../../models/Order';
 import { uniqueSlug } from '../../lib/slug';
 import { enqueueEmail, enqueueJob } from '../../lib/jobs';
 import { registerJobHandler } from '../../lib/jobRunner';
+import { logger } from '../../config/logger';
 import { recordAudit } from '../../lib/audit';
 import { canAcceptPayments } from '../payments/connect.service';
 import { upsertCustomerLead } from '../leads/leads.service';
+import { triggerFlows } from '../flows/flows.service';
 import { computeSlots, isSlotOpen } from './availability';
+import { bookingDisplayStatus } from './bookingDisplay';
 
 function publicType(bt: BookingTypeDoc) {
   return {
@@ -336,28 +339,30 @@ export async function sendBookingConfirmation(booking: BookingDoc, bt: BookingTy
     });
   }
   await scheduleBookingReminder(booking);
+  await triggerFlows(String(booking.creatorId), booking.buyerEmail, 'booking').catch(() => {});
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
- * Schedule a "your booking is coming up" reminder. Fires 24h before the start;
- * if the booking is sooner than that, falls back to 1h before. Skipped entirely
- * if even that is already in the past. Idempotent per booking via dedupeKey.
+ * Schedule "your booking is coming up" reminders at 24h and 1h before start.
+ * Each fires only when that offset is still in the future. Idempotent via
+ * per-offset dedupe keys so re-confirmation does not duplicate jobs.
  */
 export async function scheduleBookingReminder(booking: BookingDoc): Promise<void> {
   const start = booking.startAt.getTime();
   const now = Date.now();
-  let runAt: Date | null = null;
-  if (start - DAY_MS > now) runAt = new Date(start - DAY_MS);
-  else if (start - HOUR_MS > now) runAt = new Date(start - HOUR_MS);
-  if (!runAt) return;
-  await enqueueJob(
-    'booking_reminder',
-    { bookingId: booking.id },
-    { runAt, dedupeKey: `booking_reminder:${booking.id}` },
-  ).catch(() => {});
+  const schedules: { dedupeKey: string; runAt: Date }[] = [];
+  const at24h = start - DAY_MS;
+  const at1h = start - HOUR_MS;
+  if (at24h > now) schedules.push({ dedupeKey: `booking_reminder_24h:${booking.id}`, runAt: new Date(at24h) });
+  if (at1h > now) schedules.push({ dedupeKey: `booking_reminder_1h:${booking.id}`, runAt: new Date(at1h) });
+  for (const { dedupeKey, runAt } of schedules) {
+    await enqueueJob('booking_reminder', { bookingId: booking.id }, { runAt, dedupeKey }).catch((err) => {
+      logger.warn({ err, bookingId: booking.id, dedupeKey }, 'Failed to schedule booking reminder');
+    });
+  }
 }
 
 /** Job handler: send the reminder if the booking is still confirmed + upcoming. */
@@ -436,7 +441,8 @@ export async function getBookingByToken(token: string) {
     endAt: booking.endAt,
     timezone: booking.timezone,
     status: booking.status,
-    meetingUrl: booking.meetingUrl,
+    displayStatus: bookingDisplayStatus(booking),
+    meetingUrl: booking.meetingUrl || bt?.meetingUrl || '',
     whenText: whenText(booking.startAt, booking.timezone),
   };
 }
@@ -444,9 +450,15 @@ export async function getBookingByToken(token: string) {
 export async function cancelBooking(token: string): Promise<void> {
   const booking = await BookingModel.findOne({ manageToken: token });
   if (!booking || booking.status === 'cancelled') return;
+  const bt = await BookingTypeModel.findById(booking.bookingTypeId);
   booking.status = 'cancelled';
   booking.cancelledAt = new Date();
   await booking.save();
+  await enqueueEmail(booking.buyerEmail, 'booking_cancelled', {
+    title: bt?.title ?? 'Session',
+    whenText: whenText(booking.startAt, booking.timezone),
+    reason: 'This booking was cancelled.',
+  }).catch(() => {});
   recordAudit({ action: 'booking.cancelled', actorType: 'anonymous', creatorId: String(booking.creatorId), targetType: 'booking', targetId: booking.id });
 }
 
@@ -520,5 +532,7 @@ export async function listPublicBookingTypes(creatorId: string) {
     durationMin: bt.durationMin,
     priceCents: bt.priceCents,
     currency: bt.currency,
+    timezone: bt.timezone,
+    intakeQuestions: bt.intakeQuestions ?? [],
   }));
 }

@@ -968,6 +968,19 @@ function NotificationsTab() {
 
 interface Session { id: string; userAgent: string; ip: string; createdAt: string; current: boolean; }
 
+interface TwoFactorStatus {
+  enabled: boolean;
+  email: boolean;
+  authenticator: boolean;
+  methods: ('email' | 'authenticator')[];
+}
+
+interface AuthSetup {
+  qrDataUrl: string;
+  secret: string;
+  otpauthUrl: string;
+}
+
 function deviceLabel(ua: string): string {
   if (!ua) return 'Unknown device';
   const browser = /edg/i.test(ua) ? 'Edge' : /chrome/i.test(ua) ? 'Chrome' : /firefox/i.test(ua) ? 'Firefox' : /safari/i.test(ua) ? 'Safari' : 'Browser';
@@ -978,21 +991,101 @@ function deviceLabel(ua: string): string {
 function SecurityTab() {
   const { authedRequest, logout } = useAuth();
   const router = useRouter();
-  const [twoFA, setTwoFA] = useState<boolean | null>(null);
+  const [twoFA, setTwoFA] = useState<TwoFactorStatus | null>(null);
   const [sessions, setSessions] = useState<Session[] | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [error, setError] = useState('');
+
+  // Password-gated actions
+  const [pwModal, setPwModal] = useState<'email-on' | 'email-off' | 'auth-setup' | 'auth-disable' | null>(null);
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  // Authenticator setup
+  const [authSetup, setAuthSetup] = useState<AuthSetup | null>(null);
+  const [confirmCode, setConfirmCode] = useState('');
+  const [disableCode, setDisableCode] = useState('');
 
   const load = useCallback(async () => {
-    authedRequest<{ twoFactorEnabled: boolean }>('/api/account/notifications').then((r) => setTwoFA(!!r.twoFactorEnabled)).catch(() => setTwoFA(false));
+    authedRequest<TwoFactorStatus>('/api/account/two-factor')
+      .then((r) => setTwoFA(r))
+      .catch(() => setTwoFA({ enabled: false, email: false, authenticator: false, methods: [] }));
     authedRequest<{ sessions: Session[] }>('/api/account/sessions').then((r) => setSessions(r.sessions)).catch(() => setSessions([]));
   }, [authedRequest]);
   useEffect(() => { void load(); }, [load]);
 
-  async function toggle2fa() {
-    const nextVal = !twoFA;
-    setTwoFA(nextVal);
-    await authedRequest('/api/account/two-factor', { method: 'POST', body: { enabled: nextVal } }).catch(() => {});
+  async function toggleEmail(enabled: boolean) {
+    setPwModal(enabled ? 'email-on' : 'email-off');
+    setPassword('');
+    setError('');
   }
+
+  async function submitPasswordAction() {
+    if (!pwModal || !password) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (pwModal === 'email-on' || pwModal === 'email-off') {
+        const status = await authedRequest<TwoFactorStatus>('/api/account/two-factor/email', {
+          method: 'POST',
+          body: { enabled: pwModal === 'email-on', password },
+        });
+        setTwoFA(status);
+        setPwModal(null);
+        setPassword('');
+      } else if (pwModal === 'auth-setup') {
+        const setup = await authedRequest<AuthSetup>('/api/account/two-factor/authenticator/setup', {
+          method: 'POST',
+          body: { password },
+        });
+        setAuthSetup(setup);
+        setPwModal(null);
+        setPassword('');
+        setConfirmCode('');
+      } else if (pwModal === 'auth-disable') {
+        const status = await authedRequest<TwoFactorStatus>('/api/account/two-factor/authenticator/disable', {
+          method: 'POST',
+          body: { password, code: disableCode },
+        });
+        setTwoFA(status);
+        setPwModal(null);
+        setPassword('');
+        setDisableCode('');
+        setAuthSetup(null);
+      }
+    } catch (e) {
+      setError(e instanceof ApiException ? e.message : 'Something went wrong');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelAuthenticatorSetup() {
+    await authedRequest('/api/account/two-factor/authenticator/cancel', { method: 'POST' }).catch(() => {});
+    setAuthSetup(null);
+    setConfirmCode('');
+    setError('');
+  }
+
+  async function confirmAuthenticator() {
+    if (confirmCode.length < 6 || !authSetup?.secret) return;
+    setBusy(true);
+    setError('');
+    try {
+      const status = await authedRequest<TwoFactorStatus>('/api/account/two-factor/authenticator/confirm', {
+        method: 'POST',
+        body: { code: confirmCode, secret: authSetup.secret },
+      });
+      setTwoFA(status);
+      setAuthSetup(null);
+      setConfirmCode('');
+    } catch (e) {
+      setError(e instanceof ApiException ? e.message : 'Incorrect code');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function revokeOthers() {
     await authedRequest('/api/account/sessions/revoke-others', { method: 'POST' }).catch(() => {});
     await load();
@@ -1009,13 +1102,161 @@ function SecurityTab() {
 
   return (
     <div className={CARD}>
-      <div className="flex items-start gap-3">
-        <Toggle on={!!twoFA} onClick={toggle2fa} />
-        <div>
-          <div className="font-bold text-[#1a1c3a]">Two-Factor Verification</div>
-          <p className="mt-0.5 text-sm text-neutral-500">Add an additional layer of security to your account during login.</p>
-        </div>
+      <div>
+        <h2 className="text-lg font-bold tracking-tight text-[#1a1c3a]">Two-Factor Verification</h2>
+        <p className="mt-0.5 text-sm text-neutral-500">
+          Choose how you verify your identity at login. You can enable one or both methods.
+        </p>
       </div>
+
+      {twoFA === null ? (
+        <Skeleton className="mt-5 h-32 w-full" />
+      ) : (
+        <div className="mt-5 space-y-4">
+          {/* Email verification */}
+          <div className="flex items-start gap-3 rounded-2xl border border-line bg-white p-4">
+            <Toggle on={twoFA.email} onClick={() => void toggleEmail(!twoFA.email)} />
+            <div className="min-w-0 flex-1">
+              <div className="font-bold text-[#1a1c3a]">Email verification</div>
+              <p className="mt-0.5 text-sm text-neutral-500">
+                Receive a 6-digit code by email each time you log in.
+              </p>
+            </div>
+          </div>
+
+          {/* Authenticator app */}
+          <div className="rounded-2xl border border-line bg-white p-4">
+            <div className="flex items-start gap-3">
+              <Toggle
+                on={twoFA.authenticator}
+                onClick={() => {
+                  if (twoFA.authenticator) {
+                    setPwModal('auth-disable');
+                    setPassword('');
+                    setDisableCode('');
+                    setError('');
+                  } else if (!authSetup) {
+                    setPwModal('auth-setup');
+                    setPassword('');
+                    setError('');
+                  }
+                }}
+              />
+              <div className="min-w-0 flex-1">
+                <div className="font-bold text-[#1a1c3a]">Authenticator app</div>
+                <p className="mt-0.5 text-sm text-neutral-500">
+                  Use Google Authenticator, Authy, 1Password, or any TOTP app.
+                </p>
+              </div>
+            </div>
+
+            {authSetup && !twoFA.authenticator && (
+              <div className="mt-4 border-t border-line pt-4">
+                <p className="text-sm font-semibold text-[#1a1c3a]">Scan this QR code</p>
+                <p className="mt-1 text-xs text-neutral-500">
+                  Remove any existing Stan entry in your app first, then scan this code or enter the secret manually.
+                </p>
+                <div className="mt-3 flex flex-wrap items-start gap-4">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={authSetup.qrDataUrl} alt="Authenticator QR code" className="h-[200px] w-[200px] rounded-xl border border-line" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-neutral-400">Manual entry key</p>
+                    <code className="mt-1 block break-all rounded-lg bg-surface-subtle px-3 py-2 text-sm font-mono text-[#1a1c3a]">{authSetup.secret}</code>
+                  </div>
+                </div>
+                <div className="mt-4">
+                  <FieldLabel>Enter the 6-digit code from your app</FieldLabel>
+                  <input
+                    inputMode="numeric"
+                    value={confirmCode}
+                    onChange={(e) => setConfirmCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="••••••"
+                    className={`${INPUT} mt-1 text-center tracking-[0.4em]`}
+                  />
+                </div>
+                {error && <p className="mt-2 text-sm text-danger-600">{error}</p>}
+                <div className="mt-3 flex gap-2">
+                  <button
+                    type="button"
+                    disabled={busy || confirmCode.length < 6}
+                    onClick={() => void confirmAuthenticator()}
+                    className="rounded-full bg-brand-600 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-brand-700 disabled:opacity-50"
+                  >
+                    {busy ? 'Verifying…' : 'Confirm & enable'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void cancelAuthenticatorSetup()}
+                    className="rounded-full px-4 py-2.5 text-sm font-semibold text-neutral-500 hover:text-ink"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {twoFA.enabled && (
+            <p className="rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              Two-factor is active via {twoFA.methods.join(' and ')}.
+            </p>
+          )}
+        </div>
+      )}
+
+      <Modal
+        open={pwModal !== null && pwModal !== 'auth-disable'}
+        onClose={() => { setPwModal(null); setPassword(''); setError(''); }}
+        title={
+          pwModal === 'email-on' ? 'Enable email verification'
+            : pwModal === 'email-off' ? 'Disable email verification'
+              : 'Set up authenticator app'
+        }
+        subtitle="Enter your password to continue."
+        footer={
+          <button
+            type="button"
+            disabled={busy || !password}
+            onClick={() => void submitPasswordAction()}
+            className="w-full rounded-full bg-brand-600 py-3 text-sm font-bold text-white hover:bg-brand-700 disabled:opacity-50"
+          >
+            {busy ? 'Please wait…' : 'Continue'}
+          </button>
+        }
+      >
+        <PwField label="Password" value={password} onChange={setPassword} />
+        {error && <p className="mt-3 text-sm text-danger-600">{error}</p>}
+      </Modal>
+
+      <Modal
+        open={pwModal === 'auth-disable'}
+        onClose={() => { setPwModal(null); setPassword(''); setDisableCode(''); setError(''); }}
+        title="Disable authenticator app"
+        subtitle="Enter your password and a current authenticator code."
+        footer={
+          <button
+            type="button"
+            disabled={busy || !password || disableCode.length < 6}
+            onClick={() => void submitPasswordAction()}
+            className="w-full rounded-full bg-danger-600 py-3 text-sm font-bold text-white hover:bg-danger-700 disabled:opacity-50"
+          >
+            {busy ? 'Disabling…' : 'Disable authenticator'}
+          </button>
+        }
+      >
+        <PwField label="Password" value={password} onChange={setPassword} />
+        <div className="mt-3">
+          <FieldLabel>Authenticator code</FieldLabel>
+          <input
+            inputMode="numeric"
+            value={disableCode}
+            onChange={(e) => setDisableCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            placeholder="••••••"
+            className={`${INPUT} mt-1 text-center tracking-[0.4em]`}
+          />
+        </div>
+        {error && <p className="mt-3 text-sm text-danger-600">{error}</p>}
+      </Modal>
 
       <div className="mt-10">
         <div className="flex flex-wrap items-start justify-between gap-3">

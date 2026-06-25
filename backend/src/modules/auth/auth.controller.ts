@@ -27,10 +27,15 @@ export async function login(req: Request, res: Response) {
 }
 
 export async function verifyTwoFactor(req: Request, res: Response) {
-  const { challengeId, code } = req.body;
-  const { user, tokens } = await authService.verifyTwoFactor(challengeId, code, ctx(req));
+  const { challengeId, code, method } = req.body;
+  const { user, tokens } = await authService.verifyTwoFactor(challengeId, code, method, ctx(req));
   setRefreshCookie(res, tokens.refreshToken);
   res.json({ user, accessToken: tokens.accessToken });
+}
+
+export async function resendTwoFactor(req: Request, res: Response) {
+  await authService.resendTwoFactorEmail(req.body.challengeId);
+  res.status(202).json({ message: 'A new code has been sent to your email.' });
 }
 
 export async function refresh(req: Request, res: Response) {
