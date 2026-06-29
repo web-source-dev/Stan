@@ -10,7 +10,7 @@ dotenv.config();
  */
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-  PORT: z.coerce.number().int().positive().default(4000),
+  PORT: z.coerce.number().int().positive().default(5000),
   CORS_ORIGINS: z.string().default('http://localhost:3000'),
   APP_URL: z.string().url().default('http://localhost:3000'),
 
@@ -34,6 +34,12 @@ const envSchema = z.object({
 
   STRIPE_SECRET_KEY: z.string().optional().default(''),
   STRIPE_WEBHOOK_SECRET: z.string().optional().default(''),
+
+  /** When false, the API only enqueues jobs — run `npm run worker` in a separate process. */
+  JOB_RUNNER_IN_PROCESS: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
 
   // PayPal (OPTIONAL). Platform-level REST app credentials. Without them the
   // PayPal option runs in demo mode (instant simulated capture) in non-prod.
@@ -67,7 +73,7 @@ const envSchema = z.object({
   INSTAGRAM_REDIRECT_URI: z
     .string()
     .optional()
-    .default('http://localhost:4000/api/integrations/instagram/callback'),
+    .default('http://localhost:5000/api/integrations/instagram/callback'),
   // Shared secret echoed back during the webhook subscription handshake.
   INSTAGRAM_WEBHOOK_VERIFY_TOKEN: z.string().optional().default(''),
 });
@@ -111,6 +117,8 @@ export const env = {
   // full flow is demonstrable; production requires real credentials.
   paypalConfigured: Boolean(raw.PAYPAL_CLIENT_ID && raw.PAYPAL_SECRET),
   paypalDemo: !(raw.PAYPAL_CLIENT_ID && raw.PAYPAL_SECRET) && raw.NODE_ENV !== 'production',
+  /** When true (default), the API process polls the job queue. Set false in production when using a dedicated worker. */
+  jobRunnerInProcess: raw.JOB_RUNNER_IN_PROCESS,
 };
 
 export type Env = typeof env;

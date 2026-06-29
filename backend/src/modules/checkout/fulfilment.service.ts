@@ -10,7 +10,12 @@ import { upsertCustomerLead } from '../leads/leads.service';
 import { triggerFlows, triggerProductEmailFlows } from '../flows/flows.service';
 import { CourseModel } from '../../models/Course';
 import { EnrollmentModel } from '../../models/Enrollment';
-import { CreatorProfileModel } from '../../models/CreatorProfile';
+import {
+  notifyCreatorFulfillmentNeeded,
+  notifyCreatorNewSale,
+  resolveCreatorBranding,
+} from '../../lib/creatorNotifications';
+import { affiliateFieldsForOrder, recordAffiliateCommission } from '../affiliates/affiliates.service';
 
 /**
  * Bump a product's sales counters at fulfilment. Revenue is always recorded.
@@ -52,11 +57,6 @@ function formatMoney(cents: number, currency: string): string {
   }
 }
 
-async function resolveCreatorUsername(creatorId: string): Promise<string | undefined> {
-  const profile = await CreatorProfileModel.findOne({ userId: creatorId }).select('username').lean();
-  return profile?.username;
-}
-
 function personalizeConfirmText(text: string, product: ProductDoc, fulfilmentUrl: string, creatorUsername = ''): string {
   return text
     .replace(/\[Product Name\]/g, product.title)
@@ -65,48 +65,130 @@ function personalizeConfirmText(text: string, product: ProductDoc, fulfilmentUrl
     .replace(/\[Access Link\]/g, fulfilmentUrl);
 }
 
+function parseBuyerCustomFields(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'string') out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function sendCustomOrderReceivedEmail(
+  buyerEmail: string,
+  product: ProductDoc,
+  order: { amountCents: number; currency: string },
+  fulfilmentUrl: string,
+  branding: { username?: string; displayName: string; replyTo?: string },
+): Promise<void> {
+  const amount = formatMoney(order.amountCents, order.currency);
+  const portalUrl = branding.username
+    ? `${env.APP_URL}/${branding.username}/account?email=${encodeURIComponent(buyerEmail)}`
+    : undefined;
+  await enqueueEmail(
+    buyerEmail,
+    'custom_order_received',
+    {
+      productTitle: product.title,
+      amount,
+      fulfilmentUrl,
+      fulfilmentNote: product.fulfilmentNote || '',
+      creatorName: branding.displayName,
+      portalUrl,
+    },
+    { fromName: branding.displayName, replyTo: branding.replyTo },
+  );
+}
+
 async function sendProductConfirmationEmail(
   buyerEmail: string,
   product: ProductDoc,
   order: { amountCents: number; currency: string },
   fulfilmentUrl: string,
-  creatorUsername?: string,
+  branding: { username?: string; displayName: string; replyTo?: string },
 ): Promise<void> {
   const amount = formatMoney(order.amountCents, order.currency);
-  const portalUrl = creatorUsername
-    ? `${env.APP_URL}/${creatorUsername}/account?email=${encodeURIComponent(buyerEmail)}`
+  const portalUrl = branding.username
+    ? `${env.APP_URL}/${branding.username}/account?email=${encodeURIComponent(buyerEmail)}`
     : undefined;
+  const mailOpts = { fromName: branding.displayName, replyTo: branding.replyTo };
 
   if (product.confirmSubject.trim() || product.confirmBody.trim()) {
     const subject = personalizeConfirmText(
       product.confirmSubject.trim() || `Your purchase: ${product.title}`,
       product,
       fulfilmentUrl,
-      creatorUsername ?? '',
+      branding.username ?? '',
     );
     const bodyText = personalizeConfirmText(
       product.confirmBody.trim() ||
         `Thanks for purchasing ${product.title}.\n\nAccess your purchase: ${fulfilmentUrl}`,
       product,
       fulfilmentUrl,
-      creatorUsername ?? '',
+      branding.username ?? '',
     );
-    await enqueueEmail(buyerEmail, 'broadcast', {
-      subject,
-      bodyText:
-        `${bodyText}\n\n${product.thankYouMessage ? product.thankYouMessage + '\n\n' : ''}Access link: ${fulfilmentUrl}` +
-        (portalUrl ? `\n\nView all your purchases: ${portalUrl}` : ''),
-    });
+    await enqueueEmail(
+      buyerEmail,
+      'broadcast',
+      {
+        subject,
+        bodyText:
+          `${bodyText}\n\n${product.thankYouMessage ? product.thankYouMessage + '\n\n' : ''}Access link: ${fulfilmentUrl}` +
+          (portalUrl ? `\n\nView all your purchases: ${portalUrl}` : ''),
+        fromName: branding.displayName,
+      },
+      mailOpts,
+    );
     return;
   }
 
-  await enqueueEmail(buyerEmail, 'purchase_receipt', {
-    productTitle: product.title,
+  await enqueueEmail(
+    buyerEmail,
+    'purchase_receipt',
+    {
+      productTitle: product.title,
+      amount,
+      fulfilmentUrl,
+      thankYouMessage: product.thankYouMessage || '',
+      portalUrl,
+      creatorName: branding.displayName,
+    },
+    mailOpts,
+  );
+}
+
+async function notifyCreatorOnProductOrder(
+  creatorId: string,
+  product: ProductDoc,
+  order: { id: string; amountCents: number; currency: string },
+  buyerEmail: string,
+  buyerName?: string,
+): Promise<void> {
+  const amount = formatMoney(order.amountCents, order.currency);
+  await notifyCreatorNewSale(creatorId, {
+    itemTitle: product.title,
+    itemKind: 'product',
     amount,
-    fulfilmentUrl,
-    thankYouMessage: product.thankYouMessage || '',
-    portalUrl,
-  });
+    buyerEmail,
+    buyerName,
+    orderId: order.id,
+  }).catch(() => {});
+  if (product.productKind === 'custom') {
+    await notifyCreatorFulfillmentNeeded(creatorId, {
+      productTitle: product.title,
+      buyerEmail,
+      buyerName,
+      amount,
+      orderId: order.id,
+      fulfilmentNote: product.fulfilmentNote || '',
+    }).catch(() => {});
+  }
 }
 
 async function grantProductEntitlement(
@@ -156,6 +238,7 @@ export async function fulfilFreeProduct(input: {
       creatorId,
       productId,
       buyerEmail,
+      buyerName: input.buyerName ?? '',
       amountCents: 0,
       currency: product.currency,
       paymentProvider: 'free',
@@ -174,12 +257,19 @@ export async function fulfilFreeProduct(input: {
     await bumpProductSalesCounters(product, 0);
   }
 
-  const fulfilmentUrl = `${env.APP_URL}/access/${entitlement.accessToken}`;
-
   if (order.fulfilmentStatus !== 'fulfilled') {
-    const creatorUsername = await resolveCreatorUsername(creatorId).catch(() => undefined);
-    await sendProductConfirmationEmail(buyerEmail, product, order, fulfilmentUrl, creatorUsername);
-    order.fulfilmentStatus = 'fulfilled';
+    const branding = await resolveCreatorBranding(creatorId).catch(() => ({
+      displayName: 'CreatorStore',
+      username: '',
+      replyTo: undefined as string | undefined,
+    }));
+    const fulfilmentUrl = `${env.APP_URL}/access/${entitlement.accessToken}`;
+    if (product.productKind === 'custom') {
+      if (isNew) await sendCustomOrderReceivedEmail(buyerEmail, product, order, fulfilmentUrl, branding);
+    } else {
+      await sendProductConfirmationEmail(buyerEmail, product, order, fulfilmentUrl, branding);
+      order.fulfilmentStatus = 'fulfilled';
+    }
     await order.save();
     if (isNew) {
       await triggerFlows(creatorId, buyerEmail, 'lead').catch(() => {});
@@ -187,7 +277,7 @@ export async function fulfilFreeProduct(input: {
     }
   }
 
-  return { url: fulfilmentUrl, accessToken: entitlement.accessToken };
+  return { url: `${env.APP_URL}/access/${entitlement.accessToken}`, accessToken: entitlement.accessToken };
 }
 
 /**
@@ -210,8 +300,16 @@ export async function fulfilCheckoutSession(
     logger.warn({ sessionId: session.id }, 'Checkout session missing metadata/email; skipping');
     return;
   }
-  if (session.payment_status !== 'paid') {
+  const itemType = session.metadata?.itemType;
+  const isRecurringProduct = itemType === 'membership' || itemType === 'payment_plan';
+  if (!isRecurringProduct && session.payment_status !== 'paid') {
     logger.info({ sessionId: session.id, status: session.payment_status }, 'Session not paid; skipping');
+    return;
+  }
+
+  if (isRecurringProduct) {
+    const { fulfilMembershipCheckout } = await import('./membership.service');
+    await fulfilMembershipCheckout(session, accountId);
     return;
   }
 
@@ -228,6 +326,13 @@ export async function fulfilCheckoutSession(
   if (session.metadata?.itemType === 'booking') {
     const { confirmBookingFromSession } = await import('../bookings/bookings.service');
     await confirmBookingFromSession(session, accountId);
+    return;
+  }
+
+  // Webinar registrations confirm after payment.
+  if (session.metadata?.itemType === 'webinar') {
+    const { confirmWebinarFromSession } = await import('../webinars/webinars.service');
+    await confirmWebinarFromSession(session, accountId);
     return;
   }
 
@@ -248,12 +353,20 @@ export async function fulfilCheckoutSession(
   let isNew = false;
   let order = existing;
   if (!order) {
+    const amountCents = session.amount_total ?? product.priceCents;
+    const affiliateFields = await affiliateFieldsForOrder(
+      product,
+      amountCents,
+      session.metadata?.affiliateRef,
+    );
     try {
       order = await OrderModel.create({
         creatorId,
         productId,
         buyerEmail,
-        amountCents: session.amount_total ?? product.priceCents,
+        buyerName: session.metadata?.buyerName ?? '',
+        buyerCustomFields: parseBuyerCustomFields(session.metadata?.customFields),
+        amountCents,
         currency: session.currency ?? product.currency,
         applicationFeeCents:
           typeof session.metadata?.fee === 'string' ? Number(session.metadata.fee) : 0,
@@ -267,6 +380,7 @@ export async function fulfilCheckoutSession(
         paidAt: new Date(),
         source: session.metadata?.source ?? '',
         discountCode: session.metadata?.discountCode ?? '',
+        ...affiliateFields,
       });
       isNew = true;
     } catch (err) {
@@ -289,18 +403,37 @@ export async function fulfilCheckoutSession(
   // Enqueue receipt + fulfilment email (durable, retried by the job runner).
   if (order.fulfilmentStatus !== 'fulfilled' && entitlement) {
     const fulfilmentUrl = `${env.APP_URL}/access/${entitlement.accessToken}`;
-    const creatorUsername = await resolveCreatorUsername(creatorId).catch(() => undefined);
-    await sendProductConfirmationEmail(buyerEmail, product, order, fulfilmentUrl, creatorUsername);
-    order.fulfilmentStatus = 'fulfilled';
+    const branding = await resolveCreatorBranding(creatorId).catch(() => ({
+      displayName: 'CreatorStore',
+      username: '',
+      replyTo: undefined as string | undefined,
+    }));
+    const isCustom = product.productKind === 'custom';
+    if (isCustom) {
+      if (isNew) await sendCustomOrderReceivedEmail(buyerEmail, product, order, fulfilmentUrl, branding);
+    } else {
+      await sendProductConfirmationEmail(buyerEmail, product, order, fulfilmentUrl, branding);
+      order.fulfilmentStatus = 'fulfilled';
+    }
     await order.save();
     if (isNew) {
       await triggerFlows(creatorId, buyerEmail, 'purchase').catch(() => {});
       await triggerProductEmailFlows(product, buyerEmail).catch(() => {});
+      await recordAffiliateCommission(order, product).catch(() => {});
+      if (order.amountCents > 0) {
+        await notifyCreatorOnProductOrder(
+          creatorId,
+          product,
+          { id: order.id, amountCents: order.amountCents, currency: order.currency },
+          buyerEmail,
+          session.metadata?.buyerName,
+        ).catch(() => {});
+      }
     }
   }
 
   recordAudit({
-    action: 'order.fulfilled',
+    action: product.productKind === 'custom' && order.fulfilmentStatus !== 'fulfilled' ? 'order.awaiting_fulfillment' : 'order.fulfilled',
     actorType: 'system',
     creatorId,
     targetType: 'order',
@@ -337,6 +470,8 @@ async function fulfilCourseSession(
         buyerEmail,
         amountCents: session.amount_total ?? course.priceCents,
         currency: session.currency ?? course.currency,
+        applicationFeeCents:
+          typeof session.metadata?.fee === 'string' ? Number(session.metadata.fee) : 0,
         stripeCheckoutSessionId: session.id,
         stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : undefined,
         stripeAccountId: accountId,
@@ -362,19 +497,43 @@ async function fulfilCourseSession(
   }
 
   if (order.fulfilmentStatus !== 'fulfilled') {
-    const creatorUsername = await resolveCreatorUsername(creatorId).catch(() => undefined);
-    const portalUrl = creatorUsername
-      ? `${env.APP_URL}/${creatorUsername}/account?email=${encodeURIComponent(buyerEmail)}`
+    const branding = await resolveCreatorBranding(creatorId).catch(() => ({
+      displayName: 'CreatorStore',
+      username: '',
+      replyTo: undefined as string | undefined,
+    }));
+    const portalUrl = branding.username
+      ? `${env.APP_URL}/${branding.username}/account?email=${encodeURIComponent(buyerEmail)}`
       : undefined;
-    await enqueueEmail(buyerEmail, 'purchase_receipt', {
-      productTitle: course.title,
-      amount: formatMoney(order.amountCents, order.currency),
-      fulfilmentUrl: `${env.APP_URL}/learn/${enrollment.accessToken}`,
-      portalUrl,
-    });
+    const learnUrl = `${env.APP_URL}/learn/${enrollment.accessToken}`;
+    const amount = formatMoney(order.amountCents, order.currency);
+    await enqueueEmail(
+      buyerEmail,
+      'course_enrollment',
+      {
+        courseTitle: course.title,
+        amount,
+        learnUrl,
+        creatorName: branding.displayName,
+        portalUrl,
+      },
+      { fromName: branding.displayName, replyTo: branding.replyTo },
+    );
     order.fulfilmentStatus = 'fulfilled';
     await order.save();
-    if (isNew) await triggerFlows(creatorId, buyerEmail, 'purchase').catch(() => {});
+    if (isNew) {
+      await triggerFlows(creatorId, buyerEmail, 'purchase').catch(() => {});
+      if (order.amountCents > 0) {
+        await notifyCreatorNewSale(creatorId, {
+          itemTitle: course.title,
+          itemKind: 'course',
+          amount,
+          buyerEmail,
+          buyerName: session.metadata?.buyerName,
+          orderId: order.id,
+        }).catch(() => {});
+      }
+    }
   }
   recordAudit({ action: 'course.enrolled', actorType: 'system', creatorId, targetType: 'course', targetId: courseId, metadata: { sessionId: session.id } });
 }
@@ -414,6 +573,8 @@ export async function markRefunded(paymentIntentId: string): Promise<void> {
   if (order.stripeCheckoutSessionId) {
     const { cancelBookingByCheckoutSession } = await import('../bookings/bookings.service');
     await cancelBookingByCheckoutSession(order.stripeCheckoutSessionId).catch(() => {});
+    const { cancelRegistrationByCheckoutSession } = await import('../webinars/webinars.service');
+    await cancelRegistrationByCheckoutSession(order.stripeCheckoutSessionId).catch(() => {});
   }
   recordAudit({ action: 'order.refunded', actorType: 'system', creatorId: String(order.creatorId), targetType: 'order', targetId: order.id });
 }

@@ -85,29 +85,53 @@ function FunnelStep({ label, value }: { label: string; value: number }) {
 }
 
 function TimeseriesChart({ data, metric }: { data: Summary['timeseries']; metric: ChartMetric }) {
+  const CHART_H = 176;
   const value = (d: Summary['timeseries'][number]) => (metric === 'revenue' ? d.revenueCents : metric === 'views' ? d.views : d.orders);
   const fmt = (n: number) => (metric === 'revenue' ? money(n) : String(n));
   const max = Math.max(1, ...data.map(value));
-  // Keep the axis readable: label first, middle, last.
+  const total = data.reduce((sum, d) => sum + value(d), 0);
   const labelIdx = new Set([0, Math.floor(data.length / 2), data.length - 1]);
+
+  if (total === 0) {
+    return (
+      <div className="flex h-44 flex-col items-center justify-center rounded-2xl border border-dashed border-line-strong bg-surface-subtle text-center">
+        <p className="text-sm font-medium text-neutral-500">No {metric} in this date range yet</p>
+        <p className="mt-1 text-xs text-neutral-400">Traffic and sales will appear here as your store gets activity.</p>
+      </div>
+    );
+  }
+
   return (
     <div>
-      <div className="flex h-44 items-end gap-[3px]">
-        {data.map((d, i) => {
-          const v = value(d);
-          const h = Math.round((v / max) * 100);
-          return (
-            <div key={d.date} className="group relative flex flex-1 flex-col items-center justify-end" title={`${shortDay(d.date)} · ${fmt(v)}`}>
+      <div className="relative h-44">
+        <div className="absolute inset-0 flex items-end gap-[3px]">
+          {data.map((d, i) => {
+            const v = value(d);
+            const barPx = v > 0 ? Math.max(4, Math.round((v / max) * (CHART_H - 20))) : 2;
+            return (
               <div
-                className={cn('w-full rounded-t-[3px] transition', v > 0 ? 'bg-brand-500 group-hover:bg-brand-600' : 'bg-surface-muted')}
-                style={{ height: `${Math.max(h, v > 0 ? 4 : 1.5)}%` }}
-              />
-              {labelIdx.has(i) && <span className="absolute -bottom-5 whitespace-nowrap text-[10px] text-neutral-400">{shortDay(d.date)}</span>}
-            </div>
-          );
-        })}
+                key={d.date}
+                className="group relative flex h-full flex-1 flex-col justify-end"
+                title={`${shortDay(d.date)} · ${fmt(v)}`}
+              >
+                <div
+                  className={cn(
+                    'w-full rounded-t-[3px] transition',
+                    v > 0 ? 'bg-brand-500 group-hover:bg-brand-600' : 'bg-surface-muted',
+                  )}
+                  style={{ height: `${barPx}px` }}
+                />
+                {labelIdx.has(i) && (
+                  <span className="pointer-events-none absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] text-neutral-400">
+                    {shortDay(d.date)}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
-      <div className="h-5" />
+      <div className="h-6" />
     </div>
   );
 }
@@ -200,6 +224,14 @@ function AnalyticsContent({ initialData }: { initialData?: Summary | null }) {
     void load();
   }, [load, initialData]);
 
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void load();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [load]);
+
   const rangeLabel = useMemo(() => {
     if (!data) return '';
     return `${fmtDay(new Date(data.range.from))} – ${fmtDay(new Date(data.range.to))}`;
@@ -281,8 +313,12 @@ function AnalyticsContent({ initialData }: { initialData?: Summary | null }) {
         )}
       </div>
 
-      {/* Trend chart — advanced */}
-      {!locked && data && (
+      {/* Trend chart — available on all plans */}
+      {data === null ? (
+        <div className="mt-5 rounded-3xl bg-white p-7 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">
+          <Skeleton className="h-52 w-full" />
+        </div>
+      ) : (
         <div className="mt-5 rounded-3xl bg-white p-7 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="flex items-center gap-2 text-lg font-bold tracking-tight text-[#1a1c3a]">
@@ -306,7 +342,7 @@ function AnalyticsContent({ initialData }: { initialData?: Summary | null }) {
         </div>
       )}
 
-      {/* Conversion funnel + rates — advanced */}
+      {/* Conversion funnel + rates — Pro */}
       {!locked && data && (
         <div className="mt-5 rounded-3xl bg-white p-7 shadow-[0_1px_3px_rgba(15,15,25,0.05)]">
           <h3 className="flex items-center gap-2 text-lg font-bold tracking-tight text-[#1a1c3a]">

@@ -10,13 +10,15 @@ type JobHandler = (payload: Record<string, unknown>) => Promise<void>;
  */
 const handlers: Record<string, JobHandler> = {
   send_email: async (payload) => {
-    const { to, template, data } = payload as {
+    const { to, template, data, fromName, replyTo } = payload as {
       to: string;
       template: EmailTemplate;
       data: Record<string, unknown>;
+      fromName?: string;
+      replyTo?: string;
     };
     const rendered = renderEmail(template, data as never);
-    await deliverEmail(to, rendered);
+    await deliverEmail(to, rendered, { fromName, replyTo });
   },
 };
 

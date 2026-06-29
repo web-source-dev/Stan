@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type Stripe from 'stripe';
 import { env } from '../../config/env';
 import { AppError } from '../../utils/AppError';
-import { requireStripe, applicationFee } from '../../lib/stripe';
+import { requireStripe, applicationFee, APPLICATION_FEE_BPS } from '../../lib/stripe';
 import { ProductModel } from '../../models/Product';
 import { CourseModel } from '../../models/Course';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
@@ -10,9 +10,10 @@ import { EntitlementModel } from '../../models/Entitlement';
 import { EnrollmentModel } from '../../models/Enrollment';
 import { getConnectedAccountId, canAcceptPayments, getPayPalPayee } from '../payments/connect.service';
 import { recordAudit } from '../../lib/audit';
-import { computeCheckoutPricing } from './checkout-pricing';
+import { computeCheckoutPricing, isMembershipProduct, isPaymentPlanProduct, membershipBillingInterval, paymentPlanInstallmentCents } from './checkout-pricing';
 import { upsertCustomerLead } from '../leads/leads.service';
 import { CheckoutIntentModel, type CheckoutIntentDoc } from '../../models/CheckoutIntent';
+import { BookingModel } from '../../models/Booking';
 import { createOrder, approveUrl, captureOrder, captureId } from '../../lib/paypal';
 
 const DEMO_BUYER_EMAIL = 'demo-buyer@stan.test';
@@ -41,7 +42,12 @@ function demoSuccessUrl(kind: string, token?: string): string {
   return token ? `${base}&token=${token}` : base;
 }
 
-/** Post-checkout success URL (real payments). The success page renders the access link from kind+token. */
+/** Post-checkout success URL (real payments). The success page fulfils via session_id. */
+function stripeSuccessUrl(username: string, kind: string): string {
+  return `${env.APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}&username=${encodeURIComponent(username)}&kind=${kind}`;
+}
+
+/** Demo / PayPal immediate success (access token in URL). */
 function successUrl(kind: string, token?: string): string {
   const base = `${env.APP_URL}/checkout/success?kind=${kind}`;
   return token ? `${base}&token=${token}` : base;
@@ -56,7 +62,7 @@ const INTENT_TTL_MS = 3 * 60 * 60 * 1000; // 3h
  */
 async function startPayPalOrder(args: {
   creatorId: string;
-  kind: 'product' | 'course' | 'booking';
+  kind: 'product' | 'course' | 'booking' | 'webinar';
   metadata: Record<string, string>;
   amountCents: number;
   currency: string;
@@ -67,6 +73,8 @@ async function startPayPalOrder(args: {
   cancelUrl: string;
 }): Promise<{ url: string; paypalOrderId: string }> {
   const customId = `ci_${randomUUID()}`;
+  const platformFeeCents =
+    typeof args.metadata.fee === 'string' ? Number(args.metadata.fee) : applicationFee(args.amountCents);
   const order = await createOrder({
     amountCents: args.amountCents,
     currency: args.currency,
@@ -76,6 +84,7 @@ async function startPayPalOrder(args: {
     brandName: args.brandName,
     returnUrl: `${env.APP_URL}/checkout/paypal/return?kind=${args.kind}`,
     cancelUrl: args.cancelUrl,
+    platformFeeCents: platformFeeCents > 0 ? platformFeeCents : undefined,
   });
   const url = approveUrl(order);
   if (!url) throw new AppError(502, 'paypal_error', 'PayPal did not return an approval link');
@@ -106,6 +115,15 @@ async function successUrlForIntent(intent: CheckoutIntentDoc): Promise<string> {
   if (intent.kind === 'course' && meta.courseId) {
     const enr = await EnrollmentModel.findOne({ buyerEmail: intent.buyerEmail, courseId: meta.courseId });
     return successUrl('course', enr?.accessToken);
+  }
+  if (intent.kind === 'booking' && meta.bookingId) {
+    const booking = await BookingModel.findById(meta.bookingId).select('manageToken');
+    return successUrl('booking', booking?.manageToken);
+  }
+  if (intent.kind === 'webinar' && meta.registrationId) {
+    const { WebinarRegistrationModel } = await import('../../models/Webinar');
+    const reg = await WebinarRegistrationModel.findById(meta.registrationId).select('manageToken');
+    return successUrl('webinar', reg?.manageToken);
   }
   return successUrl(intent.kind);
 }
@@ -213,26 +231,127 @@ export async function createCheckoutSession(input: CheckoutInput) {
   validateCustomFields(product, input.customFieldValues);
   const pricing = computeCheckoutPricing(product, {
     discountCode: input.discountCode,
-    orderBump: input.orderBump,
+    orderBump: isMembershipProduct(product) || isPaymentPlanProduct(product) ? false : input.orderBump,
   });
 
+  const membership = isMembershipProduct(product);
+  const paymentPlan = isPaymentPlanProduct(product);
+  const recurring = membership || paymentPlan;
+  const interval = membership ? membershipBillingInterval(product) : paymentPlan ? ('month' as const) : null;
+  const installmentCents =
+    paymentPlan && product.paymentPlanInstallments > 1
+      ? paymentPlanInstallmentCents(pricing.totalCents, product.paymentPlanInstallments)
+      : pricing.finalCents;
+
   const metadata: Record<string, string> = {
-    itemType: 'product',
+    itemType: membership ? 'membership' : paymentPlan ? 'payment_plan' : 'product',
     productId: product.id,
     creatorId,
     source: input.source ?? '',
   };
   if (pricing.appliedDiscountCode) metadata.discountCode = pricing.appliedDiscountCode;
-  if (input.orderBump && pricing.orderBumpCents > 0) metadata.orderBump = '1';
+  if (!recurring && input.orderBump && pricing.orderBumpCents > 0) metadata.orderBump = '1';
   if (input.affiliateRef) metadata.affiliateRef = input.affiliateRef;
   if (input.name) metadata.buyerName = input.name;
+  if (paymentPlan) metadata.installments = String(product.paymentPlanInstallments);
   if (input.customFieldValues && Object.keys(input.customFieldValues).length) {
     metadata.customFields = JSON.stringify(input.customFieldValues).slice(0, 450);
   }
-  // Record the platform fee in metadata so fulfilment can persist it on the
-  // order (both the demo and live paths read session.metadata.fee).
-  const fee = applicationFee(pricing.totalCents);
+  const fee = recurring ? applicationFee(installmentCents) : applicationFee(pricing.totalCents);
   metadata.fee = String(fee);
+
+  if (env.demoCheckout) {
+    const { fulfilCheckoutSession } = await import('./fulfilment.service');
+    const email = (input.email || DEMO_BUYER_EMAIL).toLowerCase();
+    const session = demoSession({
+      metadata,
+      amountCents: recurring ? installmentCents : pricing.totalCents,
+      currency: product.currency,
+      email,
+    }) as Stripe.Checkout.Session & { mode?: string; subscription?: string };
+    if (recurring) {
+      session.mode = 'subscription';
+      session.subscription = `demo_sub_${randomUUID()}`;
+    }
+    await fulfilCheckoutSession(session, 'acct_demo');
+    const ent = await EntitlementModel.findOne({ buyerEmail: email, productId: product.id });
+    const kind = membership ? 'membership' : paymentPlan ? 'payment_plan' : 'product';
+    return { url: demoSuccessUrl(kind, ent?.accessToken), sessionId: session.id };
+  }
+
+  if (!(await canAcceptPayments(creatorId))) {
+    throw new AppError(
+      409,
+      'payments_not_ready',
+      'This creator has not finished Stripe setup yet. Ask them to connect Stripe in Settings → Payments.',
+    );
+  }
+  const connectedAccountId = await getConnectedAccountId(creatorId);
+  if (!connectedAccountId) {
+    throw new AppError(409, 'payments_not_ready', 'This creator cannot accept payments yet');
+  }
+
+  const stripe = requireStripe();
+
+  if (recurring && interval) {
+    const subscriptionData: Stripe.Checkout.SessionCreateParams.SubscriptionData = {
+      application_fee_percent: APPLICATION_FEE_BPS / 100,
+      metadata: { ...metadata },
+    };
+    const cancelMonths = paymentPlan
+      ? product.paymentPlanInstallments
+      : product.cancelSubscriptionEnabled && product.cancelAfterMonths > 0
+        ? product.cancelAfterMonths
+        : 0;
+    if (cancelMonths > 0) {
+      const cancelAt = Math.floor(Date.now() / 1000) + cancelMonths * 30 * 24 * 3600;
+      (subscriptionData as Stripe.Checkout.SessionCreateParams.SubscriptionData & { cancel_at?: number }).cancel_at =
+        cancelAt;
+    }
+
+    const successKind = membership ? 'membership' : 'payment_plan';
+    const session = await stripe.checkout.sessions.create(
+      {
+        mode: 'subscription',
+        success_url: stripeSuccessUrl(input.username, successKind),
+        cancel_url: `${env.APP_URL}/${input.username}/product/${input.slug}`,
+        customer_email: input.email,
+        line_items: [
+          {
+            quantity: 1,
+            price_data: {
+              currency: product.currency,
+              unit_amount: installmentCents,
+              recurring: { interval },
+              product_data: {
+                name: product.title,
+                description: buildProductDescription(product, pricing),
+              },
+            },
+          },
+        ],
+        subscription_data: subscriptionData,
+        metadata,
+      },
+      { stripeAccount: connectedAccountId },
+    );
+
+    recordAudit({
+      action: 'checkout.session_created',
+      actorType: 'anonymous',
+      creatorId,
+      targetType: 'product',
+      targetId: product.id,
+      metadata: {
+        sessionId: session.id,
+        totalCents: installmentCents,
+        recurring: true,
+        paymentPlan,
+      },
+    });
+
+    return { url: session.url, sessionId: session.id };
+  }
 
   const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [
     {
@@ -261,32 +380,10 @@ export async function createCheckoutSession(input: CheckoutInput) {
     });
   }
 
-  if (env.demoCheckout) {
-    const { fulfilCheckoutSession } = await import('./fulfilment.service');
-    const email = (input.email || DEMO_BUYER_EMAIL).toLowerCase();
-    const session = demoSession({
-      metadata,
-      amountCents: pricing.totalCents,
-      currency: product.currency,
-      email,
-    });
-    await fulfilCheckoutSession(session, 'acct_demo');
-    const ent = await EntitlementModel.findOne({ buyerEmail: email, productId: product.id });
-    return { url: demoSuccessUrl('product', ent?.accessToken), sessionId: session.id };
-  }
-
-  if (!(await canAcceptPayments(creatorId))) {
-    throw new AppError(409, 'payments_not_ready', 'This creator cannot accept payments yet');
-  }
-  const connectedAccountId = await getConnectedAccountId(creatorId);
-  if (!connectedAccountId) throw new AppError(409, 'payments_not_ready', 'Creator has no payout account');
-
-  const stripe = requireStripe();
-
   const session = await stripe.checkout.sessions.create(
     {
       mode: 'payment',
-      success_url: `${env.APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: stripeSuccessUrl(input.username, 'product'),
       cancel_url: `${env.APP_URL}/${input.username}/product/${input.slug}`,
       customer_email: input.email,
       line_items: lineItems,
@@ -360,18 +457,29 @@ export async function previewCheckoutPricing(input: {
 
 /** PayPal checkout for a product. Returns a redirect URL (approval or demo success). */
 /** Which payment methods a creator's storefront can offer (drives the buyer UI). */
-export async function getPaymentMethods(username: string): Promise<{ card: boolean; paypal: boolean }> {
+export async function getPaymentMethods(username: string): Promise<{
+  card: boolean;
+  paypal: boolean;
+  stripeConfigured: boolean;
+  demoCheckout: boolean;
+}> {
   const profile = await CreatorProfileModel.findOne({ username });
   if (!profile || !profile.published) throw AppError.notFound('Storefront not found');
   const creatorId = String(profile.userId);
   const paypal = env.paypalDemo || (env.paypalConfigured && Boolean(await getPayPalPayee(creatorId)));
-  const card = env.demoCheckout || (await canAcceptPayments(creatorId));
-  return { card, paypal };
+  const card = env.demoCheckout || (env.stripeConfigured && (await canAcceptPayments(creatorId)));
+  return { card, paypal, stripeConfigured: env.stripeConfigured, demoCheckout: env.demoCheckout };
 }
 
 export async function createPayPalProductCheckout(input: CheckoutInput): Promise<{ url: string }> {
   const { creatorId, product, profile } = await loadPublishedProduct(input.username, input.slug);
   if (product.priceCents <= 0) throw AppError.badRequest('This product is free — use the claim endpoint instead');
+  if (isMembershipProduct(product)) {
+    throw AppError.badRequest('Membership subscriptions require card checkout — PayPal is not supported for recurring billing.');
+  }
+  if (isPaymentPlanProduct(product)) {
+    throw AppError.badRequest('Payment plans require card checkout — PayPal is not supported for installments.');
+  }
 
   validateCustomFields(product, input.customFieldValues);
   const pricing = computeCheckoutPricing(product, { discountCode: input.discountCode, orderBump: input.orderBump });
@@ -515,7 +623,11 @@ export async function createBookingCheckoutSession(input: {
 
   const stripe = requireStripe();
   if (!(await canAcceptPayments(input.creatorId))) {
-    throw new AppError(409, 'payments_not_ready', 'This creator cannot accept payments yet');
+    throw new AppError(
+      409,
+      'payments_not_ready',
+      'This creator has not finished Stripe setup yet. Ask them to connect Stripe in Settings → Payments.',
+    );
   }
   const connectedAccountId = await getConnectedAccountId(input.creatorId);
   if (!connectedAccountId) throw new AppError(409, 'payments_not_ready', 'Creator has no payout account');
@@ -523,7 +635,7 @@ export async function createBookingCheckoutSession(input: {
   const session = await stripe.checkout.sessions.create(
     {
       mode: 'payment',
-      success_url: `${env.APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: stripeSuccessUrl(input.username, 'booking'),
       cancel_url: `${env.APP_URL}/${input.username}`,
       customer_email: input.email,
       line_items: [
@@ -538,6 +650,90 @@ export async function createBookingCheckoutSession(input: {
       ],
       payment_intent_data: { application_fee_amount: fee },
       metadata: { itemType: 'booking', bookingId: input.bookingId, creatorId: input.creatorId, fee: String(fee) },
+    },
+    { stripeAccount: connectedAccountId },
+  );
+  return { url: session.url, sessionId: session.id };
+}
+
+export async function createWebinarCheckoutSession(input: {
+  creatorId: string;
+  registrationId: string;
+  title: string;
+  priceCents: number;
+  currency: string;
+  email: string;
+  username: string;
+  provider?: 'stripe' | 'paypal';
+}) {
+  const fee = applicationFee(input.priceCents);
+
+  if (input.provider === 'paypal') {
+    const metadata = { itemType: 'webinar', registrationId: input.registrationId, creatorId: input.creatorId, fee: String(fee) };
+    if (env.paypalDemo) {
+      const { confirmWebinarFromSession } = await import('../webinars/webinars.service');
+      const { WebinarRegistrationModel } = await import('../../models/Webinar');
+      const session = demoSession({ metadata, amountCents: input.priceCents, currency: input.currency, email: input.email });
+      await confirmWebinarFromSession(session, 'paypal_demo');
+      const reg = await WebinarRegistrationModel.findById(input.registrationId).select('manageToken');
+      return { url: demoSuccessUrl('webinar', reg?.manageToken), sessionId: session.id };
+    }
+    if (!env.paypalConfigured) throw new AppError(503, 'paypal_unconfigured', 'PayPal is not configured');
+    const payeeEmail = await getPayPalPayee(input.creatorId);
+    if (!payeeEmail) throw new AppError(409, 'paypal_not_ready', 'This creator has not connected PayPal');
+    const { url, paypalOrderId } = await startPayPalOrder({
+      creatorId: input.creatorId,
+      kind: 'webinar',
+      metadata,
+      amountCents: input.priceCents,
+      currency: input.currency,
+      email: input.email,
+      description: input.title,
+      payeeEmail,
+      cancelUrl: `${env.APP_URL}/${input.username}`,
+    });
+    return { url, sessionId: paypalOrderId };
+  }
+
+  if (env.demoCheckout) {
+    const { confirmWebinarFromSession } = await import('../webinars/webinars.service');
+    const { WebinarRegistrationModel } = await import('../../models/Webinar');
+    const session = demoSession({
+      metadata: { itemType: 'webinar', registrationId: input.registrationId, creatorId: input.creatorId, fee: String(fee) },
+      amountCents: input.priceCents,
+      currency: input.currency,
+      email: input.email,
+    });
+    await confirmWebinarFromSession(session, 'acct_demo');
+    const reg = await WebinarRegistrationModel.findById(input.registrationId).select('manageToken');
+    return { url: demoSuccessUrl('webinar', reg?.manageToken), sessionId: session.id };
+  }
+
+  const stripe = requireStripe();
+  if (!(await canAcceptPayments(input.creatorId))) {
+    throw AppError.badRequest('This creator has not finished payment setup yet.');
+  }
+  const connectedAccountId = await getConnectedAccountId(input.creatorId);
+  if (!connectedAccountId) throw AppError.badRequest('Creator has no payout account');
+
+  const session = await stripe.checkout.sessions.create(
+    {
+      mode: 'payment',
+      success_url: stripeSuccessUrl(input.username, 'webinar'),
+      cancel_url: `${env.APP_URL}/${input.username}`,
+      customer_email: input.email,
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: input.currency,
+            unit_amount: input.priceCents,
+            product_data: { name: input.title },
+          },
+        },
+      ],
+      payment_intent_data: { application_fee_amount: fee },
+      metadata: { itemType: 'webinar', registrationId: input.registrationId, creatorId: input.creatorId, fee: String(fee) },
     },
     { stripeAccount: connectedAccountId },
   );
@@ -577,7 +773,11 @@ export async function createCourseCheckoutSession(input: CheckoutInput) {
   }
 
   if (!(await canAcceptPayments(creatorId))) {
-    throw new AppError(409, 'payments_not_ready', 'This creator cannot accept payments yet');
+    throw new AppError(
+      409,
+      'payments_not_ready',
+      'This creator has not finished Stripe setup yet. Ask them to connect Stripe in Settings → Payments.',
+    );
   }
   const connectedAccountId = await getConnectedAccountId(creatorId);
   if (!connectedAccountId) throw new AppError(409, 'payments_not_ready', 'Creator has no payout account');
@@ -586,7 +786,7 @@ export async function createCourseCheckoutSession(input: CheckoutInput) {
   const session = await stripe.checkout.sessions.create(
     {
       mode: 'payment',
-      success_url: `${env.APP_URL}/checkout/success?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: stripeSuccessUrl(input.username, 'course'),
       cancel_url: `${env.APP_URL}/${input.username}`,
       customer_email: input.email,
       line_items: [
@@ -614,4 +814,68 @@ export async function createCourseCheckoutSession(input: CheckoutInput) {
 
   recordAudit({ action: 'checkout.session_created', actorType: 'anonymous', creatorId, targetType: 'course', targetId: course.id, metadata: { sessionId: session.id } });
   return { url: session.url, sessionId: session.id };
+}
+
+/**
+ * Fulfil a completed Stripe Checkout session on the success page (local dev
+ * fallback when webhooks aren't forwarded). Idempotent via fulfilCheckoutSession.
+ */
+export async function completeCheckoutSession(input: { sessionId: string; username: string }) {
+  if (env.demoCheckout) {
+    throw AppError.badRequest('Checkout completion is not used in demo mode');
+  }
+
+  const profile = await CreatorProfileModel.findOne({ username: input.username.toLowerCase() });
+  if (!profile) throw AppError.notFound('Creator not found');
+
+  const connectedAccountId = await getConnectedAccountId(String(profile.userId));
+  if (!connectedAccountId) throw AppError.notFound('Creator payment account not found');
+
+  const stripe = requireStripe();
+  const session = await stripe.checkout.sessions.retrieve(input.sessionId, { stripeAccount: connectedAccountId });
+
+  if (session.payment_status !== 'paid') {
+    throw AppError.badRequest('Payment has not completed yet');
+  }
+
+  const { fulfilCheckoutSession } = await import('./fulfilment.service');
+  await fulfilCheckoutSession(session, connectedAccountId);
+
+  const itemType = session.metadata?.itemType ?? 'product';
+  const buyerEmail =
+    session.customer_details?.email?.toLowerCase() || session.customer_email?.toLowerCase();
+
+  if (itemType === 'booking') {
+    const { BookingModel } = await import('../../models/Booking');
+    const booking = await BookingModel.findById(session.metadata?.bookingId);
+    return { kind: 'booking' as const, token: booking?.manageToken, fulfilled: true };
+  }
+
+  if (itemType === 'webinar') {
+    const { WebinarRegistrationModel } = await import('../../models/Webinar');
+    const reg = await WebinarRegistrationModel.findById(session.metadata?.registrationId);
+    return { kind: 'webinar' as const, token: reg?.manageToken, fulfilled: true };
+  }
+
+  if (itemType === 'course') {
+    const courseId = session.metadata?.courseId;
+    const enrollment = buyerEmail && courseId
+      ? await EnrollmentModel.findOne({ buyerEmail, courseId })
+      : null;
+    return { kind: 'course' as const, token: enrollment?.accessToken, fulfilled: true };
+  }
+
+  if (itemType === 'membership' || itemType === 'payment_plan') {
+    const productId = session.metadata?.productId;
+    const entitlement = buyerEmail && productId
+      ? await EntitlementModel.findOne({ buyerEmail, productId })
+      : null;
+    return { kind: itemType as 'membership' | 'payment_plan', token: entitlement?.accessToken, fulfilled: true };
+  }
+
+  const productId = session.metadata?.productId;
+  const entitlement = buyerEmail && productId
+    ? await EntitlementModel.findOne({ buyerEmail, productId })
+    : null;
+  return { kind: 'product' as const, token: entitlement?.accessToken, fulfilled: true };
 }

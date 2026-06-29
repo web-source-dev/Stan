@@ -34,6 +34,7 @@ const SAMPLE = {
   ] as SFItem[],
   courses: [{ id: 'c1', title: 'Launch in 30 Days', slug: 'c1', shortDescription: 'A step-by-step video course.', priceCents: 9900, currency: 'usd', coverImageUrl: '', type: 'course' }] as SFItem[],
   bookingTypes: [{ id: 'b1', title: '1:1 Strategy Call', slug: 'b1', shortDescription: '45 minutes, just you and me.', priceCents: 15000, currency: 'usd', type: 'booking' }] as SFItem[],
+  webinars: [{ id: 'w1', title: 'Live Masterclass', slug: 'w1', shortDescription: 'Join me for a live session.', priceCents: 4900, currency: 'usd', type: 'webinar', ctaLabel: 'Register' }] as SFItem[],
   leads: [{ id: 'l1', title: 'Free Starter Guide', slug: 'l1', shortDescription: 'Grab the PDF.', priceCents: 0, currency: 'usd', type: 'lead_magnet' }] as SFItem[],
 };
 
@@ -107,19 +108,22 @@ export function StoreBuilder() {
       priceCents: x.priceCents ?? 0, currency: x.currency ?? 'usd',
       coverImageUrl: x.coverImageUrl ?? '', ctaLabel: x.ctaLabel, type: x.type ?? type,
     });
-    const [prod, crs, bk] = await Promise.all([
+    const [prod, crs, bk, wb] = await Promise.all([
       authedRequest<{ products: any[] }>('/api/products').catch(() => ({ products: [] })),
       authedRequest<{ courses: any[] }>('/api/courses').catch(() => ({ courses: [] })),
       authedRequest<{ bookingTypes: any[] }>('/api/booking-types').catch(() => ({ bookingTypes: [] })),
+      authedRequest<{ webinars: any[] }>('/api/webinars').catch(() => ({ webinars: [] })),
     ]);
     const products = prod.products.filter((p) => p.type !== 'lead_magnet').map((p) => mapItem(p, 'digital'));
     const leads = prod.products.filter((p) => p.type === 'lead_magnet').map((p) => mapItem(p, 'lead_magnet'));
     const courses = crs.courses.map((c) => mapItem(c, 'course'));
     const bookingTypes = bk.bookingTypes.map((b) => mapItem(b, 'booking'));
+    const webinars = wb.webinars.filter((w) => w.status === 'published').map((w) => mapItem({ ...w, ctaLabel: w.ctaLabel || 'Register' }, 'webinar'));
     setItems({
       products: products.length ? products : SAMPLE.products,
       courses: courses.length ? courses : SAMPLE.courses,
       bookingTypes: bookingTypes.length ? bookingTypes : SAMPLE.bookingTypes,
+      webinars: webinars.length ? webinars : SAMPLE.webinars,
       leads: leads.length ? leads : SAMPLE.leads,
     });
   }, [authedRequest]);
@@ -476,6 +480,7 @@ export function StoreBuilder() {
               products={[...items.products, ...items.leads]}
               courses={items.courses}
               bookingTypes={items.bookingTypes}
+              webinars={items.webinars}
               selectedId={selectedId}
               onSelectBlock={setSelectedId}
             />

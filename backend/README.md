@@ -10,7 +10,7 @@ platform-admin tooling.
 cd backend
 npm install
 cp .env.example .env   # then fill in secrets
-npm run dev            # tsx watch on http://localhost:4000
+npm run dev            # tsx watch on http://localhost:5000
 ```
 
 You need a MongoDB instance. Locally:

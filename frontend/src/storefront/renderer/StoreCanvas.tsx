@@ -61,10 +61,11 @@ interface CanvasProps {
   products?: SFItem[];
   courses?: SFItem[];
   bookingTypes?: SFItem[];
+  webinars?: SFItem[];
   mode?: 'live' | 'preview';
   buySlot?: (item: SFItem, accent: string, label: string) => ReactNode;
   emailSlot?: (cfg: EmailSlotConfig) => ReactNode;
-  hrefFor?: (kind: 'product' | 'course' | 'booking', slug: string) => string;
+  hrefFor?: (kind: 'product' | 'course' | 'booking' | 'webinar', slug: string) => string;
   selectedId?: string;
   onSelectBlock?: (id: string) => void;
   footerSlot?: ReactNode;
@@ -171,7 +172,7 @@ function blockAnimStyle(idx: number, animate: boolean): CSSProperties | undefine
 }
 
 export function StoreCanvas(props: CanvasProps) {
-  const { profile, theme: themeInput, blocks, products = [], courses = [], bookingTypes = [], mode = 'live' } = props;
+  const { profile, theme: themeInput, blocks, products = [], courses = [], bookingTypes = [], webinars = [], mode = 'live' } = props;
   const t = resolveTheme(themeInput);
   const pageBg = pageBackground(t.background, t.accent, t.accent2, t.backgroundStyle);
   const dark = isDarkHex(t.background);
@@ -202,11 +203,11 @@ export function StoreCanvas(props: CanvasProps) {
     item: SFItem,
     cfg: Record<string, any>,
     accentOverride?: string,
-    kind: 'product' | 'course' | 'booking' = 'product',
+    kind: 'product' | 'course' | 'booking' | 'webinar' = 'product',
     insideCardLink = false,
   ) {
     const a = accentOverride ?? sectionAccent(cfg);
-    const label = cfg.buttonLabel || item.ctaLabel || (kind === 'booking' ? 'Book now' : kind === 'course' ? 'View course' : 'Buy now');
+    const label = cfg.buttonLabel || item.ctaLabel || (kind === 'booking' ? 'Book now' : kind === 'webinar' ? 'Register' : kind === 'course' ? 'View course' : 'Buy now');
     const showArrow = cfg.showArrow !== false;
     const inner = (
       <>
@@ -275,7 +276,7 @@ export function StoreCanvas(props: CanvasProps) {
     );
   }
 
-  function collection(b: Block, items: SFItem[], kind: 'product' | 'course' | 'booking') {
+  function collection(b: Block, items: SFItem[], kind: 'product' | 'course' | 'booking' | 'webinar') {
     if (items.length === 0) return null;
     const cfg = b.config;
     const sorted = applyItemOrder(items, cfg.itemOrder);
@@ -512,6 +513,7 @@ export function StoreCanvas(props: CanvasProps) {
       case 'product': return collection(b, digital, 'product');
       case 'course': return collection(b, courses, 'course');
       case 'booking': return collection(b, bookingTypes, 'booking');
+      case 'webinar': return collection(b, webinars, 'webinar');
       case 'leadMagnet':
         return collection({ ...b, config: { ...cfg, buttonStyle: cfg.buttonStyle || 'soft' } }, leadMagnets, 'product');
       case 'links': {

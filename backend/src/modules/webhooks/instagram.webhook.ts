@@ -36,7 +36,8 @@ interface IgChange {
 }
 interface IgMessaging {
   sender?: { id?: string };
-  message?: { text?: string };
+  recipient?: { id?: string };
+  message?: { text?: string; is_echo?: boolean };
 }
 interface IgEntry {
   id?: string; // Instagram business account id
@@ -54,11 +55,15 @@ interface ExtractedEvent {
 /** Normalise a single entry into the fields the engine needs. */
 function extractEvents(entry: IgEntry): ExtractedEvent[] {
   const out: ExtractedEvent[] = [];
+  const accountId = entry.id;
   for (const m of entry.messaging ?? []) {
-    if (m.message?.text) out.push({ source: 'dm', text: m.message.text, targetId: m.sender?.id });
+    if (m.message?.is_echo) continue;
+    if (!m.message?.text?.trim()) continue;
+    if (accountId && m.sender?.id === accountId) continue;
+    out.push({ source: 'dm', text: m.message.text, targetId: m.sender?.id });
   }
   for (const c of entry.changes ?? []) {
-    if (c.field === 'comments' && c.value?.text) {
+    if (c.field === 'comments' && c.value?.text?.trim()) {
       out.push({ source: 'comment', text: c.value.text, targetId: c.value.id, mediaId: c.value.media?.id });
     }
   }

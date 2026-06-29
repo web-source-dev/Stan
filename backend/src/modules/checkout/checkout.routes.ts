@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { validate } from '../../middleware/validate';
 import { publicWriteLimiter } from '../../middleware/rateLimit';
+import { requireAuth } from '../../middleware/auth';
+import { env } from '../../config/env';
+import { AppError } from '../../utils/AppError';
 import {
   createCheckoutSession,
   createCourseCheckoutSession,
@@ -12,6 +15,7 @@ import {
   createPayPalCourseCheckout,
   capturePayPalOrder,
   getPaymentMethods,
+  completeCheckoutSession,
 } from './checkout.service';
 
 export const checkoutRouter = Router();
@@ -68,6 +72,15 @@ checkoutRouter.get(
 );
 
 checkoutRouter.post(
+  '/complete',
+  publicWriteLimiter,
+  validate({ body: z.object({ sessionId: z.string().min(1).max(200), username: z.string().min(1).max(80) }) }),
+  asyncHandler(async (req, res) => {
+    res.json(await completeCheckoutSession(req.body));
+  }),
+);
+
+checkoutRouter.post(
   '/preview',
   publicWriteLimiter,
   validate({ body: previewSchema }),
@@ -113,5 +126,24 @@ checkoutRouter.post(
   validate({ body: z.object({ orderId: z.string().min(1).max(64) }) }),
   asyncHandler(async (req, res) => {
     res.json(await capturePayPalOrder(req.body.orderId));
+  }),
+);
+
+/** Dev/demo: simulate membership renewal or cancel webhooks without Stripe CLI. */
+checkoutRouter.post(
+  '/dev/membership-event',
+  requireAuth,
+  validate({
+    body: z.object({
+      subscriptionId: z.string().min(1).max(120),
+      event: z.enum(['renewal', 'cancel']),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    if (env.NODE_ENV === 'production' && !env.demoCheckout) {
+      throw AppError.forbidden('Membership simulation is only available in demo/dev mode');
+    }
+    const { simulateMembershipEvent } = await import('./membership.service');
+    res.json(await simulateMembershipEvent(req.user!.id, req.body));
   }),
 );

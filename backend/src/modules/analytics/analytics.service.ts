@@ -4,6 +4,8 @@ import { AnalyticsEventModel, type EventType } from '../../models/AnalyticsEvent
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { OrderModel } from '../../models/Order';
 import { ProductModel } from '../../models/Product';
+import { CourseModel } from '../../models/Course';
+import { BookingTypeModel } from '../../models/Booking';
 
 interface TrackInput {
   username: string;
@@ -28,6 +30,25 @@ export async function track(input: TrackInput): Promise<void> {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const isoDay = (t: number) => new Date(t).toISOString().slice(0, 10);
 const pct = (num: number, den: number) => (den > 0 ? Math.round((num / den) * 1000) / 10 : 0);
+
+/** Paid orders in range — uses paidAt, falling back to createdAt. */
+function paidOrderMatch(creatorId: Types.ObjectId, fromStart: Date, toEnd: Date, opts: SummaryOptions) {
+  const match: Record<string, unknown> = {
+    creatorId,
+    status: 'paid',
+    $expr: {
+      $and: [
+        { $gte: [{ $ifNull: ['$paidAt', '$createdAt'] }, fromStart] },
+        { $lte: [{ $ifNull: ['$paidAt', '$createdAt'] }, toEnd] },
+      ],
+    },
+  };
+  if (opts.productId && /^[a-f0-9]{24}$/.test(opts.productId)) {
+    match.productId = new Types.ObjectId(opts.productId);
+  }
+  if (opts.source) match.source = opts.source;
+  return match;
+}
 
 export interface SummaryOptions {
   days?: number;
@@ -56,9 +77,7 @@ export async function summary(creatorId: string, opts: SummaryOptions = {}) {
   const days = Math.floor((toEnd.getTime() - fromStart.getTime()) / DAY_MS) + 1;
 
   const eventRange = { creatorId: cid, createdAt: { $gte: fromStart, $lte: toEnd } };
-  const orderMatch: Record<string, unknown> = { creatorId: cid, status: 'paid', paidAt: { $gte: fromStart, $lte: toEnd } };
-  if (opts.productId && /^[a-f0-9]{24}$/.test(opts.productId)) orderMatch.productId = new Types.ObjectId(opts.productId);
-  if (opts.source) orderMatch.source = opts.source;
+  const orderMatch = paidOrderMatch(cid, fromStart, toEnd, opts);
 
   const [counts, uniqAgg, ordersAgg, viewsByDay, ordersByDay, topProductsAgg, topSourcesAgg, products, sources] =
     await Promise.all([
@@ -75,7 +94,13 @@ export async function summary(creatorId: string, opts: SummaryOptions = {}) {
       ]),
       OrderModel.aggregate([
         { $match: orderMatch },
-        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$paidAt' } }, orders: { $sum: 1 }, revenueCents: { $sum: '$amountCents' } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: { $ifNull: ['$paidAt', '$createdAt'] } } },
+            orders: { $sum: 1 },
+            revenueCents: { $sum: '$amountCents' },
+          },
+        },
       ]),
       OrderModel.aggregate([
         { $match: orderMatch },
@@ -115,13 +140,20 @@ export async function summary(creatorId: string, opts: SummaryOptions = {}) {
     timeseries.push({ date: key, views: viewsMap.get(key) ?? 0, orders: o?.orders ?? 0, revenueCents: o?.revenueCents ?? 0 });
   }
 
-  // Resolve titles for the top products directly (covers archived products that
-  // aren't in the filter dropdown list).
+  // Resolve titles for top products (product, course, or booking line items).
   const topIds = topProductsAgg.map((t) => t._id).filter(Boolean);
-  const topProds = topIds.length ? await ProductModel.find({ _id: { $in: topIds } }).select('title') : [];
+  const [topProds, topCourses, topBookings] = topIds.length
+    ? await Promise.all([
+        ProductModel.find({ _id: { $in: topIds } }).select('title'),
+        CourseModel.find({ _id: { $in: topIds } }).select('title'),
+        BookingTypeModel.find({ _id: { $in: topIds } }).select('title'),
+      ])
+    : [[], [], []];
   const titleMap = new Map<string, string>([
     ...products.map((p) => [p.id, p.title] as [string, string]),
     ...topProds.map((p) => [p.id, p.title] as [string, string]),
+    ...topCourses.map((c) => [c.id, c.title] as [string, string]),
+    ...topBookings.map((b) => [b.id, b.title] as [string, string]),
   ]);
   const topProducts = topProductsAgg.map((t) => ({
     id: String(t._id),
@@ -132,7 +164,7 @@ export async function summary(creatorId: string, opts: SummaryOptions = {}) {
   const topSources = topSourcesAgg.map((t) => ({ source: t._id || 'direct', orders: t.orders, revenueCents: t.revenueCents }));
 
   return {
-    range: { days, from: fromStart, to: toEnd },
+    range: { days, from: fromStart.toISOString(), to: toEnd.toISOString() },
     filtered: { productId: opts.productId ?? '', source: opts.source ?? '' },
     totals: {
       views,

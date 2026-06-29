@@ -40,6 +40,7 @@ export function ConnectCard() {
     try {
       const res = await authedRequest<{ url: string }>('/api/payments/connect/onboard', {
         method: 'POST',
+        body: { returnBase: window.location.origin },
       });
       window.location.href = res.url;
     } catch (err) {

@@ -7,6 +7,7 @@ import { AppError } from '../../utils/AppError';
 import { hashToken } from '../../lib/tokens';
 import { signPortalToken, signGlobalPortalToken } from '../../lib/jwt';
 import { enqueueEmail } from '../../lib/jobs';
+import { resolveCreatorBranding } from '../../lib/creatorNotifications';
 import { recordAudit } from '../../lib/audit';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { CustomerLoginCodeModel } from '../../models/CustomerLoginCode';
@@ -50,10 +51,17 @@ export async function requestLoginCode(username: string, emailRaw: string) {
     expiresAt: new Date(Date.now() + CODE_TTL_MS),
   });
 
-  await enqueueEmail(email, 'customer_login_code', {
-    code,
-    creatorName: profile.displayName || profile.username,
-  }).catch(() => {});
+  const branding = await resolveCreatorBranding(creatorId).catch(() => ({
+    displayName: profile.displayName || profile.username,
+    username: profile.username,
+    replyTo: undefined as string | undefined,
+  }));
+  await enqueueEmail(
+    email,
+    'customer_login_code',
+    { code, creatorName: branding.displayName },
+    { fromName: branding.displayName, replyTo: branding.replyTo },
+  ).catch(() => {});
 
   return { sent: true, ...(env.isProd ? {} : { devCode: code }) };
 }

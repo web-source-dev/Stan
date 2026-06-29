@@ -41,12 +41,12 @@ export default async function StorefrontPage({ params }: Props) {
   const data = await load(username);
   if (!data) notFound();
 
-  const { profile, theme, blocks, products, courses, bookingTypes } = data;
+  const { profile, theme, blocks, products, courses, bookingTypes, webinars } = data;
   const showBranding = data.showBranding !== false; // Free plan shows the Stan badge
 
   const built = blocks && blocks.length ? hydrateBlocks(blocks) : defaultStoreBlocks();
 
-  const hasOffers = products.length > 0 || courses.length > 0 || bookingTypes.length > 0;
+  const hasOffers = products.length > 0 || courses.length > 0 || bookingTypes.length > 0 || webinars.length > 0;
 
   return (
     <>
@@ -70,8 +70,9 @@ export default async function StorefrontPage({ params }: Props) {
         products={products as SFItem[]}
         courses={courses as SFItem[]}
         bookingTypes={bookingTypes as SFItem[]}
+        webinars={webinars as SFItem[]}
         hrefFor={(kind, slug) =>
-          `/${profile.username}/${kind === 'course' ? 'course' : kind === 'booking' ? 'book' : 'product'}/${slug}`
+          `/${profile.username}/${kind === 'course' ? 'course' : kind === 'booking' ? 'book' : kind === 'webinar' ? 'webinar' : 'product'}/${slug}`
         }
         buySlot={(item, a, label) => (
           <ProductCheckoutLink

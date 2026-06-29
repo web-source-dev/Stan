@@ -15,6 +15,7 @@ import { recordAudit } from '../../lib/audit';
 import { triggerFlows } from '../flows/flows.service';
 import { bookingDisplayStatus } from '../bookings/bookingDisplay';
 import { enqueueEmail } from '../../lib/jobs';
+import { resolveCreatorBranding } from '../../lib/creatorNotifications';
 import { env } from '../../config/env';
 import { unsubscribeToken } from '../broadcasts/broadcasts.service';
 
@@ -84,7 +85,11 @@ async function sendSubscriberWelcome(
     email,
     'subscriber_welcome',
     { creatorName, storefrontUrl, unsubscribeUrl, firstName: firstName || undefined },
-    { dedupeKey: `subscriber_welcome:${creatorId}:${email.toLowerCase()}` },
+    {
+      dedupeKey: `subscriber_welcome:${creatorId}:${email.toLowerCase()}`,
+      fromName: creatorName,
+      replyTo: (await resolveCreatorBranding(creatorId).catch(() => undefined))?.replyTo,
+    },
   );
 }
 

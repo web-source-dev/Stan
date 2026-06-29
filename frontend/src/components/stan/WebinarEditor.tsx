@@ -1088,6 +1088,12 @@ export function WebinarEditor({ initial, onSaved }: { initial: WebinarEditorStat
                 </div>
               </AccordionPanel>
 
+              <AccordionPanel icon={<IconGlobe size={18} />} title="Delivery links" open={openOption === 'delivery'} onToggle={() => setOpenOption(openOption === 'delivery' ? null : 'delivery')}>
+                <CharField label="Live join URL" value={form.meetingUrl} onChange={(v) => patch('meetingUrl', v)} max={2000} placeholder="https://zoom.us/j/…" />
+                <CharField label="Replay URL (optional)" value={form.replayUrl} onChange={(v) => patch('replayUrl', v)} max={2000} placeholder="https://…" />
+                <p className="mt-2 text-xs text-neutral-500">Registrants see the join link on their confirmation email and manage page.</p>
+              </AccordionPanel>
+
               <AccordionPanel icon={<IconTrending size={18} />} title="Order Bump" open={openOption === 'order-bump'} onToggle={() => setOpenOption(openOption === 'order-bump' ? null : 'order-bump')}>
                 <label className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#1a1a2e]">
                   <input type="checkbox" checked={localOrderBump.enabled} onChange={(e) => setLocalOrderBump((s) => ({ ...s, enabled: e.target.checked }))} className="rounded border-[#e4e5eb] accent-[#6355fa]" />

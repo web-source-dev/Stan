@@ -11,7 +11,7 @@
  * A production NEXT_PUBLIC_API_URL pointing at a real (non-local) host is always
  * honored. On the server (SSR) we fall back to the env value.
  */
-const API_PORT = process.env.NEXT_PUBLIC_API_PORT ?? '4000';
+const API_PORT = process.env.NEXT_PUBLIC_API_PORT ?? '5000';
 
 function isLocalHost(host: string): boolean {
   return (
@@ -160,6 +160,18 @@ export async function fetchStorefront(username: string) {
       durationMin: number;
       priceCents: number;
       currency: string;
+    }[];
+    webinars: {
+      id: string;
+      title: string;
+      slug: string;
+      shortDescription: string;
+      priceCents: number;
+      currency: string;
+      coverImageUrl: string;
+      ctaLabel: string;
+      durationMin: number;
+      type: 'webinar';
     }[];
     showBranding?: boolean;
   }>(`/api/storefront/${encodeURIComponent(username)}`, { credentials: false });

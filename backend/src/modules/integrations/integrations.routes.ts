@@ -8,7 +8,7 @@ import { AppError } from '../../utils/AppError';
 import { recordAudit } from '../../lib/audit';
 import { getEntitlements } from '../subscription/subscription.guard';
 import { IntegrationModel, INTEGRATION_PROVIDERS, type IntegrationDoc, type IntegrationProvider } from '../../models/Integration';
-import { buildLoginUrl } from './instagram.service';
+import { buildLoginUrl, isLiveInstagramConnection } from './instagram.service';
 
 // Mounted at /api/integrations.
 export const integrationsRouter = Router();
@@ -39,12 +39,15 @@ const META = {
 } as const;
 
 function publicIntegration(provider: IntegrationProvider, doc: IntegrationDoc | null) {
+  const connected = doc?.status === 'connected';
   return {
     provider,
     status: doc?.status ?? 'disconnected',
-    connected: doc?.status === 'connected',
+    connected,
     accountName: doc?.accountName ?? '',
     connectedAt: doc?.connectedAt ?? null,
+    liveMode: provider === 'instagram' ? isLiveInstagramConnection(doc) : connected,
+    tokenExpiresAt: provider === 'instagram' ? doc?.tokenExpiresAt ?? null : null,
   };
 }
 
@@ -115,6 +118,9 @@ integrationsRouter.post(
       doc.status = 'disconnected';
       doc.accountName = '';
       doc.connectedAt = undefined;
+      doc.externalAccountId = '';
+      doc.pageId = '';
+      doc.tokenExpiresAt = undefined;
       doc.set('accessToken', '');
       doc.set('refreshToken', '');
       await doc.save();

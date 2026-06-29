@@ -8,11 +8,11 @@ onboarding wizard, and the creator dashboard.
 ```bash
 cd frontend
 npm install
-cp .env.example .env.local   # set NEXT_PUBLIC_API_URL if the API isn't on :4000
+cp .env.example .env.local   # set NEXT_PUBLIC_API_URL if the API isn't on :5000
 npm run dev                  # http://localhost:3000
 ```
 
-The backend API must be running (default `http://localhost:4000`). Auth uses an
+The backend API must be running (default `http://localhost:5000`). Auth uses an
 in-memory access token plus the backend's httpOnly refresh cookie, so both apps
 must be reachable from the browser and the API's `CORS_ORIGINS` must include
 `http://localhost:3000`.

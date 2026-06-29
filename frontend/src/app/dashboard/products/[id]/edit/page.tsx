@@ -87,6 +87,7 @@ export default function EditProductPage({ params }: { params: Promise<{ id: stri
     setIsAffiliateLink(false);
     setInitial({
       id: p.id,
+      slug: p.slug,
       title: p.title,
       type: p.type,
       productKind: p.productKind ?? p.type,

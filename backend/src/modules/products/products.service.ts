@@ -282,6 +282,16 @@ export async function publishProduct(creatorId: string, id: string) {
   if (product.productKind === 'stan_affiliate' && !product.redirectUrl?.trim()) {
     throw AppError.badRequest('Your affiliate link is not ready — set up your store username first');
   }
+  if (product.productKind === 'membership' && !product.accessUrl?.trim()) {
+    throw AppError.badRequest('Add a member access link before publishing your membership');
+  }
+  if (
+    product.productKind === 'membership' &&
+    product.billingInterval !== 'month' &&
+    product.billingInterval !== 'year'
+  ) {
+    throw AppError.badRequest('Membership products must bill monthly or yearly');
+  }
 
   product.status = 'published';
   await product.save();

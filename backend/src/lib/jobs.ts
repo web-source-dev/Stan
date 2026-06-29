@@ -41,7 +41,8 @@ export function enqueueEmail(
   to: string,
   template: string,
   data: Record<string, unknown>,
-  options: EnqueueOptions = {},
+  options: EnqueueOptions & { fromName?: string; replyTo?: string } = {},
 ): Promise<string> {
-  return enqueueJob('send_email', { to, template, data }, options);
+  const { fromName, replyTo, ...jobOptions } = options;
+  return enqueueJob('send_email', { to, template, data, fromName, replyTo }, jobOptions);
 }

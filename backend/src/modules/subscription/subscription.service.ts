@@ -3,6 +3,28 @@ import { InvoiceModel } from '../../models/Invoice';
 import { accrueCommissionForUser } from '../referrals/referrals.service';
 import { logger } from '../../config/logger';
 
+/** Activate a paid plan after Stripe Checkout (or demo select). */
+export async function activateSubscriptionPlan(userId: string, plan: PlanKey) {
+  const sub = await SubscriptionModel.findOne({ userId });
+  if (!sub) throw new Error('Subscription not found');
+  const prevPlanKey = normalizePlan(sub.plan);
+  const wasPaidActive = sub.status === 'active' && PLANS[prevPlanKey].tier !== 'free';
+
+  sub.plan = plan;
+  sub.stanleyAddon = PLANS[plan].tier === 'premium';
+  sub.cancelAtPeriodEnd = false;
+  sub.status = 'active';
+  sub.trialEndsAt = undefined;
+  const months = PLANS[plan].interval === 'year' ? 12 : 1;
+  sub.currentPeriodEnd = new Date(Date.now() + months * 30 * 24 * 60 * 60 * 1000);
+  await sub.save();
+
+  if (prevPlanKey !== plan || !wasPaidActive) {
+    await createSubscriptionInvoice(userId, plan, sub.currentPeriodEnd).catch(() => {});
+  }
+  return sub;
+}
+
 /** Next sequential invoice number for a user, e.g. INV-2026-0003. */
 export async function nextInvoiceNumber(userId: string): Promise<string> {
   const count = await InvoiceModel.countDocuments({ userId });

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { Schema, model, Types, type InferSchemaType, type HydratedDocument } from 'mongoose';
 
 const webinarSlotSchema = new Schema(
@@ -61,6 +62,11 @@ const webinarSchema = new Schema(
     confirmSubject: { type: String, maxlength: 200, default: 'Your webinar spot is confirmed' },
     confirmBody: { type: String, maxlength: 5000, default: '' },
 
+    /** Live session join link emailed to registrants. */
+    meetingUrl: { type: String, default: '' },
+    /** Optional replay link shown after the session starts. */
+    replayUrl: { type: String, default: '' },
+
     status: { type: String, enum: ['draft', 'published', 'archived'], default: 'draft', index: true },
 
     registrationCount: { type: Number, default: 0 },
@@ -74,3 +80,45 @@ webinarSchema.index({ creatorId: 1, slug: 1 }, { unique: true });
 export type Webinar = InferSchemaType<typeof webinarSchema>;
 export type WebinarDoc = HydratedDocument<Webinar>;
 export const WebinarModel = model('Webinar', webinarSchema);
+
+/** A buyer's seat in a scheduled webinar slot. */
+const webinarRegistrationSchema = new Schema(
+  {
+    creatorId: { type: Types.ObjectId, ref: 'User', required: true, index: true },
+    webinarId: { type: Types.ObjectId, ref: 'Webinar', required: true, index: true },
+    slotId: { type: Types.ObjectId, required: true, index: true },
+
+    buyerEmail: { type: String, required: true, lowercase: true, trim: true },
+    buyerName: { type: String, default: '' },
+    customFieldAnswers: { type: Schema.Types.Mixed, default: {} },
+
+    startsAt: { type: Date, required: true, index: true },
+    timezone: { type: String, default: 'UTC' },
+
+    status: {
+      type: String,
+      enum: ['pending_payment', 'confirmed', 'cancelled'],
+      default: 'confirmed',
+      index: true,
+    },
+    orderId: { type: Types.ObjectId, ref: 'Order' },
+    stripeCheckoutSessionId: { type: String },
+
+    manageToken: {
+      type: String,
+      default: () => crypto.randomBytes(24).toString('base64url'),
+      index: true,
+    },
+    cancelledAt: { type: Date },
+  },
+  { timestamps: true },
+);
+webinarRegistrationSchema.index(
+  { webinarId: 1, slotId: 1, buyerEmail: 1 },
+  { unique: true, partialFilterExpression: { status: { $in: ['confirmed', 'pending_payment'] } } },
+);
+webinarRegistrationSchema.index({ webinarId: 1, slotId: 1, status: 1 });
+
+export type WebinarRegistration = InferSchemaType<typeof webinarRegistrationSchema>;
+export type WebinarRegistrationDoc = HydratedDocument<WebinarRegistration>;
+export const WebinarRegistrationModel = model('WebinarRegistration', webinarRegistrationSchema);

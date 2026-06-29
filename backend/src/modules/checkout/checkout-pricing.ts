@@ -49,6 +49,42 @@ export function assertQuantityAvailable(product: ProductDoc): void {
   }
 }
 
+/** Membership products and any product with month/year billing use Stripe Subscriptions. */
+export function isMembershipProduct(product: {
+  productKind?: string;
+  billingInterval?: string;
+}): boolean {
+  return (
+    product.productKind === 'membership' ||
+    product.billingInterval === 'month' ||
+    product.billingInterval === 'year'
+  );
+}
+
+export function membershipBillingInterval(product: { billingInterval?: string }): 'month' | 'year' {
+  return product.billingInterval === 'year' ? 'year' : 'month';
+}
+
+/** Split-payment plan on a one-time product (not membership). */
+export function isPaymentPlanProduct(product: {
+  productKind?: string;
+  billingInterval?: string;
+  paymentPlanEnabled?: boolean;
+  paymentPlanInstallments?: number;
+}): boolean {
+  return Boolean(
+    product.paymentPlanEnabled &&
+      (product.paymentPlanInstallments ?? 0) > 1 &&
+      !isMembershipProduct(product),
+  );
+}
+
+/** Per-installment amount in cents (may total slightly above price when not evenly divisible). */
+export function paymentPlanInstallmentCents(totalCents: number, installments: number): number {
+  if (installments < 2) return totalCents;
+  return Math.ceil(totalCents / installments);
+}
+
 export function computeCheckoutPricing(
   product: ProductDoc,
   input: CheckoutPricingInput = {},
@@ -64,9 +100,11 @@ export function computeCheckoutPricing(
   const totalCents = afterCode + orderBumpCents;
 
   let paymentPlanNote: string | undefined;
-  if (product.paymentPlanEnabled && product.paymentPlanInstallments > 1 && totalCents > 0) {
-    const per = (totalCents / product.paymentPlanInstallments / 100).toFixed(2);
-    paymentPlanNote = `Payment plan: ${product.paymentPlanInstallments} installments of $${per} (charged in full today)`;
+  if (isPaymentPlanProduct(product) && totalCents > 0) {
+    const n = product.paymentPlanInstallments;
+    const per = paymentPlanInstallmentCents(totalCents, n);
+    const perLabel = (per / 100).toFixed(2);
+    paymentPlanNote = `Payment plan: ${n} monthly payments of $${perLabel}`;
   }
 
   return {

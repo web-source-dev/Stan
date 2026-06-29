@@ -18,7 +18,7 @@ import {
 import { UserModel } from '../../models/User';
 import { CreatorProfileModel } from '../../models/CreatorProfile';
 import { InvoiceModel, type InvoiceDoc } from '../../models/Invoice';
-import { createSubscriptionInvoice, nextInvoiceNumber } from './subscription.service';
+import { createSubscriptionInvoice, nextInvoiceNumber, activateSubscriptionPlan } from './subscription.service';
 import { AppError } from '../../utils/AppError';
 import { env } from '../../config/env';
 import { requireStripe } from '../../lib/stripe';
@@ -107,6 +107,8 @@ subscriptionRouter.get(
       subscription: publicSub(await getOrCreate(req.user!.id)),
       plans: PLAN_CATALOGUE,
       storagePacks: STORAGE_PACK_CATALOGUE,
+      stripeConfigured: env.stripeConfigured,
+      demoCheckout: env.demoCheckout,
     });
   }),
 );
@@ -171,31 +173,64 @@ subscriptionRouter.post(
   asyncHandler(async (req, res) => {
     const sub = await getOrCreate(req.user!.id);
     const plan = req.body.plan as PlanKey;
-    const prevPlanKey = normalizePlan(sub.plan);
-    const wasPaidActive = sub.status === 'active' && PLANS[prevPlanKey].tier !== 'free';
-    sub.plan = plan;
-    sub.stanleyAddon = PLANS[plan].tier === 'premium';
-    sub.cancelAtPeriodEnd = false; // (re)subscribing clears any scheduled cancel
 
     if (plan === 'free') {
-      // Downgrade: free tier, no trial, no billing period.
+      sub.plan = plan;
+      sub.stanleyAddon = false;
+      sub.cancelAtPeriodEnd = false;
       sub.status = 'active';
       sub.trialEndsAt = undefined;
       sub.currentPeriodEnd = undefined;
-    } else {
-      // Selecting a paid plan activates it immediately (demo: no real card) and
-      // resets the billing period to the plan's interval.
-      sub.status = 'active';
-      const months = PLANS[plan].interval === 'year' ? 12 : 1;
-      sub.currentPeriodEnd = new Date(Date.now() + months * 30 * 24 * 60 * 60 * 1000);
+      await sub.save();
+      return res.json({ subscription: publicSub(sub) });
     }
-    await sub.save();
 
-    // Bill (and credit referral commission) when activating paid or switching paid plans.
-    if (plan !== 'free' && (prevPlanKey !== plan || !wasPaidActive)) {
-      await createSubscriptionInvoice(req.user!.id, plan, sub.currentPeriodEnd).catch(() => {});
+    if (env.demoCheckout) {
+      await activateSubscriptionPlan(req.user!.id, plan);
+      return res.json({ subscription: publicSub(await getOrCreate(req.user!.id)), demo: true });
     }
-    res.json({ subscription: publicSub(sub) });
+
+    const planInfo = PLANS[plan];
+    const stripe = requireStripe();
+    const user = await UserModel.findById(req.user!.id);
+    const session = await stripe.checkout.sessions.create({
+      mode: 'payment',
+      success_url: `${env.APP_URL}/dashboard/settings?tab=billing&plan=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${env.APP_URL}/dashboard/settings?tab=billing&plan=cancelled`,
+      customer_email: user?.email,
+      line_items: [
+        {
+          quantity: 1,
+          price_data: {
+            currency: 'usd',
+            unit_amount: planInfo.cents,
+            product_data: {
+              name: `${planInfo.label} plan (${planInfo.interval === 'year' ? 'yearly' : 'monthly'})`,
+            },
+          },
+        },
+      ],
+      metadata: { itemType: 'subscription_plan', userId: req.user!.id, plan },
+    });
+    res.json({ url: session.url, sessionId: session.id });
+  }),
+);
+
+/** Fulfil a platform subscription checkout when webhooks aren't forwarded (local dev). */
+subscriptionRouter.post(
+  '/complete',
+  validate({ body: z.object({ sessionId: z.string().min(1).max(200) }) }),
+  asyncHandler(async (req, res) => {
+    if (env.demoCheckout) throw AppError.badRequest('Not used in demo mode');
+    const stripe = requireStripe();
+    const session = await stripe.checkout.sessions.retrieve(req.body.sessionId);
+    if (session.payment_status !== 'paid') throw AppError.badRequest('Payment not completed');
+    if (session.metadata?.itemType !== 'subscription_plan') throw AppError.badRequest('Invalid session');
+    if (session.metadata.userId !== req.user!.id) throw AppError.forbidden('Session does not belong to this account');
+    const plan = session.metadata.plan as PlanKey;
+    if (!(plan in PLANS)) throw AppError.badRequest('Invalid plan');
+    await activateSubscriptionPlan(req.user!.id, plan);
+    res.json({ subscription: publicSub(await getOrCreate(req.user!.id)) });
   }),
 );
 

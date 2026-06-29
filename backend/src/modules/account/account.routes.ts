@@ -10,6 +10,7 @@ import { AppError } from '../../utils/AppError';
 import { recordAudit } from '../../lib/audit';
 import { env } from '../../config/env';
 import { renderEmail, type EmailTemplate } from '../../lib/email';
+import { normalizeNotificationPrefs } from '../../lib/notificationPrefs';
 import * as twoFactorService from './twoFactor.service';
 
 // Account-level settings (mounted at /api/account).
@@ -27,10 +28,24 @@ const EMAIL_SAMPLES: { template: EmailTemplate; label: string; data: unknown }[]
   { template: 'login_code', label: 'Login code (2FA)', data: { code: '019922' } },
   { template: 'password_reset', label: 'Password reset', data: { resetUrl: 'https://app.example.com/reset-password?token=sample' } },
   { template: 'password_changed', label: 'Password changed', data: {} },
-  { template: 'purchase_receipt', label: 'Purchase receipt', data: { productTitle: 'Creator Notion Starter Pack', amount: '$29.00', fulfilmentUrl: 'https://app.example.com/access/sample', thankYouMessage: 'Thanks so much — enjoy the templates!' } },
-  { template: 'booking_confirmation', label: 'Booking confirmation', data: { title: '30-min Strategy Call', whenText: 'Tue, Jun 24 at 3:00 PM', meetingUrl: 'https://meet.example.com/abc', manageUrl: 'https://app.example.com/booking/sample' } },
-  { template: 'booking_reminder', label: 'Booking reminder', data: { title: '30-min Strategy Call', whenText: 'Tue, Jun 24 at 3:00 PM', startsInText: 'in about 24 hours', meetingUrl: 'https://meet.example.com/abc', manageUrl: 'https://app.example.com/booking/sample' } },
+  { template: 'purchase_receipt', label: 'Purchase receipt', data: { productTitle: 'Creator Notion Starter Pack', amount: '$29.00', fulfilmentUrl: 'https://app.example.com/access/sample', thankYouMessage: 'Thanks so much — enjoy the templates!', creatorName: 'Maya Chen' } },
+  { template: 'course_enrollment', label: 'Course enrollment', data: { courseTitle: 'Content Creator Masterclass', amount: '$97.00', learnUrl: 'https://app.example.com/learn/sample', creatorName: 'Maya Chen' } },
+  { template: 'booking_confirmation', label: 'Booking confirmation', data: { title: '30-min Strategy Call', whenText: 'Tue, Jun 24 at 3:00 PM', meetingUrl: 'https://meet.example.com/abc', manageUrl: 'https://app.example.com/booking/sample', creatorName: 'Maya Chen' } },
+  { template: 'booking_reminder', label: 'Booking reminder', data: { title: '30-min Strategy Call', whenText: 'Tue, Jun 24 at 3:00 PM', startsInText: 'in about 24 hours', meetingUrl: 'https://meet.example.com/abc', manageUrl: 'https://app.example.com/booking/sample', creatorName: 'Maya Chen' } },
+  { template: 'booking_cancelled', label: 'Booking cancelled', data: { title: '30-min Strategy Call', whenText: 'Tue, Jun 24 at 3:00 PM', reason: 'The creator had to reschedule this week.', creatorName: 'Maya Chen' } },
   { template: 'customer_login_code', label: 'Customer portal code', data: { code: '482913', creatorName: 'Maya Chen' } },
+  { template: 'subscriber_welcome', label: 'Subscriber welcome', data: { creatorName: 'Maya Chen', storefrontUrl: 'https://app.example.com/maya', unsubscribeUrl: 'https://app.example.com/unsubscribe?e=sample', firstName: 'Alex' } },
+  { template: 'lead_captured', label: 'Lead captured (to creator)', data: { creatorName: 'Maya Chen', subscriberEmail: 'alex@example.com', subscriberName: 'Alex', leadsUrl: 'https://app.example.com/dashboard/leads' } },
+  { template: 'creator_new_sale', label: 'New sale (to creator)', data: { creatorName: 'Maya Chen', itemTitle: 'Creator Notion Starter Pack', itemKind: 'product', amount: '$29.00', buyerEmail: 'alex@example.com', buyerName: 'Alex', ordersUrl: 'https://app.example.com/dashboard/orders' } },
+  { template: 'creator_new_booking', label: 'New booking (to creator)', data: { creatorName: 'Maya Chen', title: '30-min Strategy Call', whenText: 'Tue, Jun 24 at 3:00 PM', buyerEmail: 'alex@example.com', buyerName: 'Alex', bookingsUrl: 'https://app.example.com/dashboard/bookings' } },
+  { template: 'creator_fulfillment_needed', label: 'Fulfillment needed (to creator)', data: { creatorName: 'Maya Chen', productTitle: 'Personalized Video Response', buyerEmail: 'alex@example.com', buyerName: 'Alex', amount: '$49.00', ordersUrl: 'https://app.example.com/dashboard/orders', fulfilmentNote: 'Deliver within 3 business days.' } },
+  { template: 'custom_order_received', label: 'Custom order received (buyer)', data: { productTitle: 'Personalized Video Response', amount: '$49.00', fulfilmentUrl: 'https://app.example.com/access/sample', fulfilmentNote: 'Deliver within 3 business days.', creatorName: 'Maya Chen' } },
+  { template: 'custom_order_delivered', label: 'Custom order delivered (buyer)', data: { productTitle: 'Personalized Video Response', fulfilmentUrl: 'https://app.example.com/access/sample', fulfillmentMessage: 'Here is your personalized video — thanks for your patience!', deliveryUrl: 'https://example.com/delivery', creatorName: 'Maya Chen' } },
+  { template: 'membership_welcome', label: 'Membership welcome', data: { productTitle: 'VIP Creator Club', amount: '$9.99', interval: 'month', accessUrl: 'https://discord.gg/example', fulfilmentUrl: 'https://app.example.com/access/sample', creatorName: 'Maya Chen' } },
+  { template: 'recurring_payment', label: 'Recurring payment (buyer)', data: { productTitle: 'VIP Creator Club', amount: '$9.99', interval: 'month', accessUrl: 'https://discord.gg/example', fulfilmentUrl: 'https://app.example.com/access/sample', creatorName: 'Maya Chen' } },
+  { template: 'membership_cancelled', label: 'Membership cancelled (buyer)', data: { productTitle: 'VIP Creator Club', creatorName: 'Maya Chen' } },
+  { template: 'membership_payment_failed', label: 'Membership payment failed (buyer)', data: { productTitle: 'VIP Creator Club', amount: '$9.99', creatorName: 'Maya Chen' } },
+  { template: 'creator_membership_cancelled', label: 'Membership cancelled (to creator)', data: { creatorName: 'Maya Chen', productTitle: 'VIP Creator Club', buyerEmail: 'alex@example.com', buyerName: 'Alex', leadsUrl: 'https://app.example.com/dashboard/leads' } },
   { template: 'broadcast', label: 'Broadcast / newsletter', data: { subject: 'New drop: Summer Content Kit 🌞', bodyText: 'Hey!\n\nMy new Summer Content Kit is live — 60 plug-and-play templates to plan a whole season in an afternoon.\n\nGrab it this week for 20% off.', fromName: 'Maya Chen', unsubscribeUrl: 'https://app.example.com/unsubscribe?e=sample' } },
 ];
 
@@ -74,7 +89,7 @@ accountRouter.get(
     const user = await UserModel.findById(req.user!.id).select('notificationPrefs twoFactorEnabled twoFactorEmail twoFactorAuthenticator');
     if (!user) throw AppError.notFound('User not found');
     const status = await twoFactorService.getTwoFactorStatus(req.user!.id);
-    res.json({ prefs: user.get('notificationPrefs'), twoFactorEnabled: status.enabled, twoFactor: status });
+    res.json({ prefs: normalizeNotificationPrefs(user.get('notificationPrefs') as Record<string, boolean>), twoFactorEnabled: status.enabled, twoFactor: status });
   }),
 );
 
@@ -84,11 +99,11 @@ accountRouter.patch(
   asyncHandler(async (req, res) => {
     const user = await UserModel.findById(req.user!.id);
     if (!user) throw AppError.notFound('User not found');
-    const prefs = { ...(user.get('notificationPrefs') ?? {}) };
+    const prefs = normalizeNotificationPrefs(user.get('notificationPrefs') as Record<string, boolean>);
     for (const k of PREF_KEYS) if (typeof req.body[k] === 'boolean') prefs[k] = req.body[k];
     user.set('notificationPrefs', prefs);
     await user.save();
-    res.json({ prefs: user.get('notificationPrefs') });
+    res.json({ prefs: normalizeNotificationPrefs(user.get('notificationPrefs') as Record<string, boolean>) });
   }),
 );
 

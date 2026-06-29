@@ -12,7 +12,7 @@ const checkoutIntentSchema = new Schema(
     provider: { type: String, enum: ['paypal'], default: 'paypal' },
     providerOrderId: { type: String, required: true, unique: true, index: true },
     creatorId: { type: Types.ObjectId, ref: 'User', required: true, index: true },
-    kind: { type: String, enum: ['product', 'course', 'booking'], required: true },
+    kind: { type: String, enum: ['product', 'course', 'booking', 'webinar'], required: true },
     // Stripe-checkout-session-shaped metadata consumed by fulfilCheckoutSession.
     metadata: { type: Schema.Types.Mixed, default: {} },
     amountCents: { type: Number, required: true },

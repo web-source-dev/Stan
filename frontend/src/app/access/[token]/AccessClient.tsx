@@ -14,6 +14,10 @@ interface ProductMeta {
   deliveryMode: 'file' | 'url';
   redirectUrl?: string;
   allowDownload?: boolean;
+  productKind?: string;
+  fulfilmentNote?: string;
+  fulfillmentPending?: boolean;
+  fulfillmentMessage?: string;
 }
 interface FileItem {
   id: string;
@@ -40,6 +44,7 @@ interface MetaResponse {
   product: ProductMeta;
   emailHint: string;
   fileCount: number;
+  fulfillmentPending?: boolean;
 }
 interface VerifyResponse {
   session: string;
@@ -277,8 +282,13 @@ export function AccessClient({ token }: { token: string }) {
                   <form onSubmit={requestCode}>
                     <p className="mb-3 text-sm text-neutral-600">
                       For your security, enter the email you purchased with
-                      {meta?.emailHint ? <> (<span className="font-medium">{meta.emailHint}</span>)</> : ''}. We’ll send a
-                      one-time code to unlock your {meta?.fileCount === 1 ? 'file' : 'files'}.
+                      {meta?.emailHint ? <> (<span className="font-medium">{meta.emailHint}</span>)</> : ''}. We&apos;ll send a
+                      one-time code to unlock your purchase
+                      {meta?.fulfillmentPending || meta?.product?.fulfillmentPending
+                        ? ' and check delivery status'
+                        : meta?.fileCount === 1
+                          ? ' and your file'
+                          : ' and your files'}.
                     </p>
                     <div className="relative">
                       <IconMail size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400" />
@@ -348,16 +358,42 @@ export function AccessClient({ token }: { token: string }) {
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={cover} alt={product.title} className="mb-5 h-44 w-full rounded-xl object-cover" />
               )}
+              {product.fulfillmentPending ? (
+                <>
+                  <div className="flex items-center gap-2 text-sm font-medium text-amber-700">
+                    <IconLock size={18} /> Being prepared
+                  </div>
+                  <h1 className="mt-2 text-2xl font-bold tracking-tight">{product.title}</h1>
+                  <p className="mt-2 text-sm leading-relaxed text-neutral-600">
+                    Your order is in progress. The creator is preparing your custom delivery — we&apos;ll email you when it&apos;s ready.
+                  </p>
+                  {product.fulfilmentNote && (
+                    <p className="mt-4 rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                      <span className="font-semibold">What to expect: </span>
+                      {product.fulfilmentNote}
+                    </p>
+                  )}
+                  <p className="mt-6 text-xs text-neutral-400">
+                    Bookmark this page and check back anytime. You&apos;re verified on this device.
+                  </p>
+                </>
+              ) : (
+                <>
               <div className="flex items-center gap-2 text-sm font-medium text-success-700">
                 <IconCheckCircle size={18} /> Unlocked
               </div>
               <h1 className="mt-2 text-2xl font-bold tracking-tight">{product.title}</h1>
+              {product.fulfillmentMessage && (
+                <p className="mt-2 rounded-xl border border-line bg-surface-subtle/60 px-4 py-3 text-sm leading-relaxed text-neutral-700">
+                  {product.fulfillmentMessage}
+                </p>
+              )}
               {product.thankYouMessage && (
                 <p className="mt-2 text-sm leading-relaxed text-neutral-600">{product.thankYouMessage}</p>
               )}
 
               {/* URL-delivery products: a button to the destination */}
-              {product.deliveryMode === 'url' && product.redirectUrl && (
+              {product.redirectUrl && (
                 <a
                   href={product.redirectUrl}
                   target="_blank"
@@ -372,7 +408,7 @@ export function AccessClient({ token }: { token: string }) {
                 <div className="mt-6">
                   <h2 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Your files</h2>
                   {files.length === 0 ? (
-                    <p className="mt-2 text-sm text-neutral-500">No files are attached to this product.</p>
+                    <p className="mt-2 text-sm text-neutral-500">No files are attached to this order.</p>
                   ) : (
                     <ul className="mt-3 space-y-2">
                       {files.map((f) => {
@@ -425,6 +461,8 @@ export function AccessClient({ token }: { token: string }) {
               <p className="mt-6 text-xs text-neutral-400">
                 Bookmark this page — it stays unlocked on this device, and your access links are personal to your email.
               </p>
+                </>
+              )}
             </>
           )}
         </Card>

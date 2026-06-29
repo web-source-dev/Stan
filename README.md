@@ -43,9 +43,13 @@ cp frontend/.env.local.example frontend/.env.local
 - `RESEND_API_KEY` + `EMAIL_FROM` — real email delivery (blank → emails logged to console)
 - `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` — real payments (blank in dev → **demo checkout** simulates a paid purchase so the full flow is testable)
 
-**Frontend:** `NEXT_PUBLIC_API_URL` (default `http://localhost:4000`).
+**Frontend:** `NEXT_PUBLIC_API_URL` (default `http://localhost:5000`).
 
 > **Full env guide:** see [ENV_SETUP.md](./ENV_SETUP.md) for every variable, how to obtain each key, and production checklist.
+
+> **Income & payouts:** see [docs/INCOME.md](./docs/INCOME.md) for how sales appear in the dashboard, revenue vs cash-out balances, and Stripe Connect setup.
+
+> **Platform status:** see [docs/PLATFORM_STATUS.md](./docs/PLATFORM_STATUS.md) for what's implemented, partial, and still to build.
 
 > Dev convenience: when `RESEND_API_KEY` is blank in non-production, the
 > email-verification gate is bypassed, so you can publish a store without
@@ -62,11 +66,31 @@ cd ../frontend && npm install
 
 # 2. Seed demo data (from backend/)
 cd ../backend && npm run seed          # first time
-#   npm run seed:force                 # wipe & reseed
+#   npm run seed:force                 # wipe & reseed (including users)
+#   npm run seed:refresh               # clear data but keep user accounts
 
-# 3. Run (two terminals)
-cd backend  && npm run dev             # API on http://localhost:4000
+# 3. Run (two terminals — add a third for a dedicated worker in production)
+cd backend  && npm run dev             # API on http://localhost:5000
 cd frontend && npm run dev             # App on http://localhost:3000
+```
+
+**Optional — dedicated email worker** (recommended in production):
+
+```bash
+# Terminal 3 (backend/)
+cd backend && npm run dev:worker
+
+# On the API process, disable in-process polling so only the worker claims jobs:
+#   JOB_RUNNER_IN_PROCESS=false npm run dev
+```
+
+By default the API runs the job queue in-process, so a separate worker is not required for local development.
+
+```bash
+# Production split
+cd backend && npm run build
+JOB_RUNNER_IN_PROCESS=false npm run start      # API
+npm run start:worker                           # worker
 ```
 
 Open **http://localhost:3000** and log in.
@@ -145,7 +169,8 @@ Everything works in dev; some delivery requires keys:
 npm run dev          # start API (tsx watch)
 npm run typecheck    # tsc --noEmit
 npm run seed         # seed demo data
-npm run seed:force   # wipe & reseed
+npm run seed:force   # wipe & reseed (including users)
+npm run seed:refresh # clear data but keep user accounts
 npm run build        # compile to dist/
 npm start            # run compiled build
 
@@ -172,3 +197,5 @@ npm run lint         # next lint
 | Emails not arriving | `RESEND_API_KEY` is blank → emails are logged to the backend console, not sent. |
 | Uploads fail | `CLOUDINARY_*` not set → uploads disabled; paste an image URL instead. |
 | `dup key … username: "alex"` on reseed | Fixed — use `npm run seed:force`. |
+| Stripe Connect returns to wrong port / still shows "Register" | `APP_URL` in `backend/.env` must match the frontend origin (default `http://localhost:3000`). After connecting, you land on Settings → Payments and status refreshes from Stripe. |
+| Stripe webhooks not firing locally | The API runs on **port 5000**. Use the CLI: `stripe listen --forward-to localhost:5000/webhooks/stripe` and put the printed `whsec_…` in `STRIPE_WEBHOOK_SECRET`. |

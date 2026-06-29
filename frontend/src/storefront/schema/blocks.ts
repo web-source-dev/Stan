@@ -225,6 +225,14 @@ export const BLOCK_DEFS: Record<BlockType, BlockDef> = {
     default: collectionDefault('Book a call', 'Book a time'),
     fields: collectionFields(),
   },
+  webinar: {
+    type: 'webinar',
+    label: 'Webinars',
+    emoji: '🎥',
+    category: 'offers',
+    default: collectionDefault('Join a webinar', 'Register'),
+    fields: collectionFields(),
+  },
   leadMagnet: {
     type: 'leadMagnet',
     label: 'Free resources',
@@ -495,6 +503,7 @@ export const ADDABLE_BLOCKS: BlockType[] = [
   'product',
   'course',
   'booking',
+  'webinar',
   'leadMagnet',
   'featured',
   'links',

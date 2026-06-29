@@ -8,6 +8,7 @@ import { recordAudit } from '../../lib/audit';
 import { listPublicProducts } from '../products/products.service';
 import { listPublicCourses } from '../courses/courses.service';
 import { listPublicBookingTypes } from '../bookings/bookings.service';
+import { listPublicWebinars } from '../webinars/webinars.service';
 
 export function isReserved(username: string): boolean {
   return RESERVED_USERNAMES.has(username);
@@ -203,6 +204,7 @@ export async function getPublicStorefront(username: string) {
   const products = await listPublicProducts(String(profile.userId));
   const courses = await listPublicCourses(String(profile.userId));
   const bookingTypes = await listPublicBookingTypes(String(profile.userId));
+  const webinars = await listPublicWebinars(String(profile.userId));
   // "Powered by Stan" branding is shown on Free stores and removed on paid plans.
   const sub = await SubscriptionModel.findOne({ userId: profile.userId });
   const tier = sub ? effectiveTier(sub) : 'free';
@@ -215,6 +217,7 @@ export async function getPublicStorefront(username: string) {
     products,
     courses,
     bookingTypes,
+    webinars,
     showBranding,
   };
 }

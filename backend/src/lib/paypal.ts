@@ -46,10 +46,14 @@ async function ppFetch<T>(path: string, init: RequestInit): Promise<T> {
     ...init,
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init.headers ?? {}) },
   });
-  const data = (await res.json().catch(() => null)) as T | null;
+  const data = (await res.json().catch(() => null)) as (T & {
+    message?: string;
+    details?: { issue?: string; description?: string }[];
+  }) | null;
   if (!res.ok) {
+    const detail = data?.details?.[0]?.description ?? data?.message ?? 'PayPal request failed';
     logger.error({ status: res.status, path, data }, 'PayPal API error');
-    throw new AppError(502, 'paypal_error', 'PayPal request failed');
+    throw new AppError(502, 'paypal_error', detail);
   }
   return data as T;
 }
@@ -74,20 +78,33 @@ export async function createOrder(input: {
   brandName?: string;
   returnUrl: string;
   cancelUrl: string;
+  /** Platform application fee (deducted from payee, credited to platform merchant). */
+  platformFeeCents?: number;
 }): Promise<PayPalOrder> {
   const currency = input.currency.toUpperCase();
+  const purchaseUnit: Record<string, unknown> = {
+    amount: { currency_code: currency, value: toAmount(input.amountCents, input.currency) },
+    description: input.description?.slice(0, 127),
+    custom_id: input.customId,
+    ...(input.payeeEmail ? { payee: { email_address: input.payeeEmail } } : {}),
+  };
+  if (input.platformFeeCents && input.platformFeeCents > 0) {
+    purchaseUnit.payment_instruction = {
+      platform_fees: [
+        {
+          amount: {
+            currency_code: currency,
+            value: toAmount(input.platformFeeCents, input.currency),
+          },
+        },
+      ],
+    };
+  }
   return ppFetch<PayPalOrder>('/v2/checkout/orders', {
     method: 'POST',
     body: JSON.stringify({
       intent: 'CAPTURE',
-      purchase_units: [
-        {
-          amount: { currency_code: currency, value: toAmount(input.amountCents, input.currency) },
-          description: input.description?.slice(0, 127),
-          custom_id: input.customId,
-          ...(input.payeeEmail ? { payee: { email_address: input.payeeEmail } } : {}),
-        },
-      ],
+      purchase_units: [purchaseUnit],
       application_context: {
         brand_name: input.brandName?.slice(0, 127) || 'CreatorStore',
         user_action: 'PAY_NOW',

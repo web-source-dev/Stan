@@ -1,73 +1,83 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { requireAuth } from '../../middleware/auth';
-import { OrderModel } from '../../models/Order';
-import { ProductModel } from '../../models/Product';
-import { CourseModel } from '../../models/Course';
-import { BookingTypeModel } from '../../models/Booking';
-import { Types } from 'mongoose';
+import { validate } from '../../middleware/validate';
+import {
+  incomeSummary,
+  listCreatorOrders,
+  revenueTimeseries,
+  createPayoutDashboardLink,
+  getCreatorOrder,
+  fulfillCustomOrder,
+} from './orders.service';
 
 // Authenticated creator order views (mounted at /api/orders).
 export const ordersRouter = Router();
 ordersRouter.use(requireAuth);
 
+const orderIdParam = z.object({ id: z.string().regex(/^[a-f0-9]{24}$/) });
+
+const fulfillmentAssetSchema = z.object({
+  publicId: z.string().min(1).max(500),
+  resourceType: z.enum(['raw', 'image', 'video']).default('raw'),
+  filename: z.string().min(1).max(500),
+  bytes: z.number().min(0).default(0),
+  format: z.string().max(50).default(''),
+});
+
+const fulfillBodySchema = z
+  .object({
+    message: z.string().max(5000).optional().default(''),
+    deliveryUrl: z.string().url().max(2000).optional().or(z.literal('')).default(''),
+    assets: z.array(fulfillmentAssetSchema).max(20).default([]),
+  })
+  .refine((d) => d.message.trim() || d.deliveryUrl.trim() || d.assets.length > 0, {
+    message: 'Provide a message, delivery link, or at least one file.',
+  });
+
 ordersRouter.get(
   '/',
   asyncHandler(async (req, res) => {
-    const orders = await OrderModel.find({ creatorId: req.user!.id })
-      .sort({ createdAt: -1 })
-      .limit(500);
-
-    // An order's productId may reference a Product, Course, or BookingType
-    // (course/booking purchases reuse the order line). Resolve the item name
-    // across all three so every order row is labelled.
-    const ids = orders.map((o) => o.get('productId')).filter(Boolean);
-    const [products, courses, bookings] = await Promise.all([
-      ProductModel.find({ _id: { $in: ids } }, 'title slug').lean(),
-      CourseModel.find({ _id: { $in: ids } }, 'title slug').lean(),
-      BookingTypeModel.find({ _id: { $in: ids } }, 'title slug').lean(),
-    ]);
-    const items = new Map<string, { title: string; slug: string; kind: string }>();
-    for (const p of products) items.set(String(p._id), { title: p.title, slug: p.slug, kind: 'product' });
-    for (const c of courses) items.set(String(c._id), { title: c.title, slug: c.slug, kind: 'course' });
-    for (const b of bookings) items.set(String(b._id), { title: b.title, slug: b.slug, kind: 'booking' });
-
-    res.json({
-      orders: orders.map((o) => ({
-        id: o.id,
-        buyerEmail: o.buyerEmail,
-        amountCents: o.amountCents,
-        currency: o.currency,
-        status: o.status,
-        fulfilmentStatus: o.fulfilmentStatus,
-        discountCode: o.get('discountCode') ?? '',
-        paymentProvider: o.get('paymentProvider') || (o.amountCents === 0 ? 'free' : 'stripe'),
-        product: items.get(String(o.get('productId'))) ?? null,
-        createdAt: o.get('createdAt'),
-      })),
-    });
+    res.json({ orders: await listCreatorOrders(req.user!.id) });
   }),
 );
 
 ordersRouter.get(
   '/summary',
   asyncHandler(async (req, res) => {
-    const creatorId = new Types.ObjectId(req.user!.id);
-    const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    res.json(await incomeSummary(req.user!.id));
+  }),
+);
 
-    const [agg] = await OrderModel.aggregate([
-      { $match: { creatorId, status: 'paid', paidAt: { $gte: since } } },
-      { $group: { _id: null, revenueCents: { $sum: '$amountCents' }, orders: { $sum: 1 } } },
-    ]);
-    const productCount = await ProductModel.countDocuments({
-      creatorId,
-      status: 'published',
-    });
+ordersRouter.get(
+  '/timeseries',
+  asyncHandler(async (req, res) => {
+    res.json({ series: await revenueTimeseries(req.user!.id) });
+  }),
+);
 
-    res.json({
-      revenueCents: agg?.revenueCents ?? 0,
-      orders: agg?.orders ?? 0,
-      publishedProducts: productCount,
-    });
+/** Stripe Express dashboard login link for cashing out to bank. */
+ordersRouter.post(
+  '/payouts/login',
+  asyncHandler(async (req, res) => {
+    res.json(await createPayoutDashboardLink(req.user!.id));
+  }),
+);
+
+ordersRouter.get(
+  '/:id',
+  validate({ params: orderIdParam }),
+  asyncHandler(async (req, res) => {
+    res.json({ order: await getCreatorOrder(req.user!.id, String(req.params.id)) });
+  }),
+);
+
+ordersRouter.post(
+  '/:id/fulfill',
+  validate({ params: orderIdParam, body: fulfillBodySchema }),
+  asyncHandler(async (req, res) => {
+    const body = req.body as z.infer<typeof fulfillBodySchema>;
+    res.json(await fulfillCustomOrder(req.user!.id, String(req.params.id), body));
   }),
 );

@@ -8,6 +8,7 @@ import { OrderModel } from '../../models/Order';
 import { uniqueSlug } from '../../lib/slug';
 import { enqueueEmail, enqueueJob } from '../../lib/jobs';
 import { registerJobHandler } from '../../lib/jobRunner';
+import { notifyCreatorNewBooking, resolveCreatorBranding } from '../../lib/creatorNotifications';
 import { logger } from '../../config/logger';
 import { recordAudit } from '../../lib/audit';
 import { canAcceptPayments } from '../payments/connect.service';
@@ -201,16 +202,23 @@ export async function getPublicBookingType(username: string, slug: string) {
 export async function getAvailability(username: string, slug: string, fromIso?: string, toIso?: string) {
   const { bt } = await publishedType(username, slug);
   const slots = await computeSlots(bt, fromIso, toIso);
-  return { timezone: bt.timezone, durationMin: bt.durationMin, slots };
+  const weekdayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const weekdays = [...new Set(bt.weeklyWindows.map((w) => w.weekday))].sort((a, b) => a - b);
+  return {
+    timezone: bt.timezone,
+    durationMin: bt.durationMin,
+    slots,
+    scheduling: {
+      maxHorizonDays: bt.maxHorizonDays,
+      minNoticeMin: bt.minNoticeMin,
+      weekdays,
+      weekdayLabels: weekdays.map((d) => weekdayLabels[d] ?? String(d)),
+    },
+  };
 }
 
 function whenText(startAt: Date, zone: string): string {
   return DateTime.fromJSDate(startAt, { zone }).toFormat("cccc, LLL d 'at' h:mm a (ZZZZ)");
-}
-
-async function resolveCreatorUsername(creatorId: string): Promise<string | undefined> {
-  const profile = await CreatorProfileModel.findOne({ userId: creatorId }).select('username').lean();
-  return profile?.username;
 }
 
 /**
@@ -301,15 +309,19 @@ export async function createBooking(input: {
 }
 
 export async function sendBookingConfirmation(booking: BookingDoc, bt: BookingTypeDoc) {
-  const creatorUsername = await resolveCreatorUsername(String(booking.creatorId)).catch(() => undefined);
-  const portalUrl = creatorUsername
-    ? `${env.APP_URL}/${creatorUsername}/account?email=${encodeURIComponent(booking.buyerEmail)}`
+  const branding = await resolveCreatorBranding(String(booking.creatorId)).catch(() => ({
+    displayName: 'CreatorStore',
+    username: '',
+    replyTo: undefined as string | undefined,
+  }));
+  const portalUrl = branding.username
+    ? `${env.APP_URL}/${branding.username}/account?email=${encodeURIComponent(booking.buyerEmail)}`
     : undefined;
   const manageUrl = `${env.APP_URL}/booking/${booking.manageToken}`;
   const wt = whenText(booking.startAt, booking.timezone);
   const meetingUrl = booking.meetingUrl || bt.meetingUrl || undefined;
+  const mailOpts = { fromName: branding.displayName, replyTo: branding.replyTo };
 
-  // Creators can customize the confirmation email per booking type, same as products.
   if (bt.confirmSubject?.trim() || bt.confirmBody?.trim()) {
     const personalise = (t: string) =>
       t
@@ -317,7 +329,7 @@ export async function sendBookingConfirmation(booking: BookingDoc, bt: BookingTy
         .replace(/\[When\]/g, wt)
         .replace(/\[Meeting Link\]/g, meetingUrl ?? '')
         .replace(/\[Manage Link\]/g, manageUrl)
-        .replace(/\[My Username\]/g, creatorUsername ?? '');
+        .replace(/\[My Username\]/g, branding.username ?? '');
     const subject = personalise(bt.confirmSubject?.trim() || `Booking confirmed: ${bt.title}`);
     const bodyText = personalise(
       bt.confirmBody?.trim() ||
@@ -325,21 +337,40 @@ export async function sendBookingConfirmation(booking: BookingDoc, bt: BookingTy
           (meetingUrl ? `\n\nMeeting link: ${meetingUrl}` : '') +
           `\n\nManage your booking: ${manageUrl}`,
     );
-    await enqueueEmail(booking.buyerEmail, 'broadcast', {
-      subject,
-      bodyText: bodyText + (portalUrl ? `\n\nView all your purchases: ${portalUrl}` : ''),
-    });
+    await enqueueEmail(
+      booking.buyerEmail,
+      'broadcast',
+      {
+        subject,
+        bodyText: bodyText + (portalUrl ? `\n\nView all your purchases: ${portalUrl}` : ''),
+        fromName: branding.displayName,
+      },
+      mailOpts,
+    );
   } else {
-    await enqueueEmail(booking.buyerEmail, 'booking_confirmation', {
-      title: bt.title,
-      whenText: wt,
-      meetingUrl,
-      manageUrl,
-      portalUrl,
-    });
+    await enqueueEmail(
+      booking.buyerEmail,
+      'booking_confirmation',
+      {
+        title: bt.title,
+        whenText: wt,
+        meetingUrl,
+        manageUrl,
+        portalUrl,
+        creatorName: branding.displayName,
+      },
+      mailOpts,
+    );
   }
   await scheduleBookingReminder(booking);
   await triggerFlows(String(booking.creatorId), booking.buyerEmail, 'booking').catch(() => {});
+  await notifyCreatorNewBooking(String(booking.creatorId), {
+    title: bt.title,
+    whenText: wt,
+    buyerEmail: booking.buyerEmail,
+    buyerName: booking.buyerName,
+    bookingId: booking.id,
+  }).catch(() => {});
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -373,18 +404,28 @@ async function processBookingReminder(payload: Record<string, unknown>): Promise
   if (!bt) return;
   const mins = Math.round((booking.startAt.getTime() - Date.now()) / 60000);
   const startsInText = mins >= 90 ? `in about ${Math.round(mins / 60)} hours` : mins >= 45 ? 'in about an hour' : `in ${Math.max(1, mins)} minutes`;
-  const creatorUsername = await resolveCreatorUsername(String(booking.creatorId)).catch(() => undefined);
-  const portalUrl = creatorUsername
-    ? `${env.APP_URL}/${creatorUsername}/account?email=${encodeURIComponent(booking.buyerEmail)}`
+  const branding = await resolveCreatorBranding(String(booking.creatorId)).catch(() => ({
+    displayName: 'CreatorStore',
+    username: '',
+    replyTo: undefined as string | undefined,
+  }));
+  const portalUrl = branding.username
+    ? `${env.APP_URL}/${branding.username}/account?email=${encodeURIComponent(booking.buyerEmail)}`
     : undefined;
-  await enqueueEmail(booking.buyerEmail, 'booking_reminder', {
-    title: bt.title,
-    whenText: whenText(booking.startAt, booking.timezone),
-    startsInText,
-    meetingUrl: booking.meetingUrl || bt.meetingUrl || undefined,
-    manageUrl: `${env.APP_URL}/booking/${booking.manageToken}`,
-    portalUrl,
-  });
+  await enqueueEmail(
+    booking.buyerEmail,
+    'booking_reminder',
+    {
+      title: bt.title,
+      whenText: whenText(booking.startAt, booking.timezone),
+      startsInText,
+      meetingUrl: booking.meetingUrl || bt.meetingUrl || undefined,
+      manageUrl: `${env.APP_URL}/booking/${booking.manageToken}`,
+      portalUrl,
+      creatorName: branding.displayName,
+    },
+    { fromName: branding.displayName, replyTo: branding.replyTo },
+  );
 }
 
 /** Register booking job handlers with the runner (called at boot). */
@@ -411,6 +452,8 @@ export async function confirmBookingFromSession(session: Stripe.Checkout.Session
       buyerEmail: booking.buyerEmail,
       amountCents: session.amount_total ?? bt.priceCents,
       currency: session.currency ?? bt.currency,
+      applicationFeeCents:
+        typeof session.metadata?.fee === 'string' ? Number(session.metadata.fee) : 0,
       stripeCheckoutSessionId: session.id,
       stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : undefined,
       stripeAccountId: accountId,
@@ -454,11 +497,22 @@ export async function cancelBooking(token: string): Promise<void> {
   booking.status = 'cancelled';
   booking.cancelledAt = new Date();
   await booking.save();
-  await enqueueEmail(booking.buyerEmail, 'booking_cancelled', {
-    title: bt?.title ?? 'Session',
-    whenText: whenText(booking.startAt, booking.timezone),
-    reason: 'This booking was cancelled.',
-  }).catch(() => {});
+  const branding = await resolveCreatorBranding(String(booking.creatorId)).catch(() => ({
+    displayName: 'CreatorStore',
+    username: '',
+    replyTo: undefined as string | undefined,
+  }));
+  await enqueueEmail(
+    booking.buyerEmail,
+    'booking_cancelled',
+    {
+      title: bt?.title ?? 'Session',
+      whenText: whenText(booking.startAt, booking.timezone),
+      reason: 'This booking was cancelled.',
+      creatorName: branding.displayName,
+    },
+    { fromName: branding.displayName, replyTo: branding.replyTo },
+  ).catch(() => {});
   recordAudit({ action: 'booking.cancelled', actorType: 'anonymous', creatorId: String(booking.creatorId), targetType: 'booking', targetId: booking.id });
 }
 
@@ -474,11 +528,22 @@ export async function cancelBookingByCheckoutSession(stripeCheckoutSessionId: st
   booking.status = 'cancelled';
   booking.cancelledAt = new Date();
   await booking.save();
-  await enqueueEmail(booking.buyerEmail, 'booking_cancelled', {
-    title: bt?.title ?? 'Session',
-    whenText: whenText(booking.startAt, booking.timezone),
-    reason: 'Your payment was refunded, so this booking has been cancelled.',
-  }).catch(() => {});
+  const branding = await resolveCreatorBranding(String(booking.creatorId)).catch(() => ({
+    displayName: 'CreatorStore',
+    username: '',
+    replyTo: undefined as string | undefined,
+  }));
+  await enqueueEmail(
+    booking.buyerEmail,
+    'booking_cancelled',
+    {
+      title: bt?.title ?? 'Session',
+      whenText: whenText(booking.startAt, booking.timezone),
+      reason: 'Your payment was refunded, so this booking has been cancelled.',
+      creatorName: branding.displayName,
+    },
+    { fromName: branding.displayName, replyTo: branding.replyTo },
+  ).catch(() => {});
   recordAudit({ action: 'booking.cancelled_refund', actorType: 'system', creatorId: String(booking.creatorId), targetType: 'booking', targetId: booking.id });
 }
 

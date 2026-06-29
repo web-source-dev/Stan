@@ -9,10 +9,13 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
+    "start:worker": "node dist/worker.js",
     "typecheck": "tsc --noEmit",
     "worker": "tsx src/worker.ts",
+    "dev:worker": "tsx watch src/worker.ts",
     "seed": "tsx src/models/seed/index.ts",
-    "seed:force": "tsx src/models/seed/index.ts --force"
+    "seed:force": "tsx src/models/seed/index.ts --force",
+    "seed:refresh": "tsx src/models/seed/index.ts --keep-users"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -22,13 +22,13 @@ export function CourseCTA({
   const [email, setEmail] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [paypal, setPaypal] = useState(false);
+  const [methods, setMethods] = useState({ card: false, paypal: false });
   const formRef = useRef<HTMLFormElement>(null);
 
   useEffect(() => {
     if (priceCents <= 0) return;
-    apiRequest<{ paypal: boolean }>(`/api/checkout/payment-methods/${encodeURIComponent(username)}`, { credentials: false })
-      .then((m) => setPaypal(m.paypal))
+    apiRequest<{ card: boolean; paypal: boolean }>(`/api/checkout/payment-methods/${encodeURIComponent(username)}`, { credentials: false })
+      .then((m) => setMethods({ card: m.card, paypal: m.paypal }))
       .catch(() => {});
   }, [username, priceCents]);
 
@@ -60,6 +60,10 @@ export function CourseCTA({
 
   function go(e: React.FormEvent) {
     e.preventDefault();
+    if (priceCents > 0 && !methods.card && methods.paypal) {
+      void start('paypal');
+      return;
+    }
     void start('card');
   }
   function payWithPayPal() {
@@ -79,13 +83,19 @@ export function CourseCTA({
       />
       <button
         type="submit"
-        disabled={busy}
+        disabled={busy || (priceCents > 0 && !methods.card && !methods.paypal)}
         className="w-full rounded-xl px-4 py-3 text-sm font-semibold text-white shadow-soft transition hover:brightness-105 active:translate-y-px disabled:opacity-60"
         style={{ backgroundColor: accent }}
       >
-        {busy ? 'Working…' : priceCents > 0 ? `Buy · ${formatPrice(priceCents, currency)}` : 'Enroll free'}
+        {busy
+          ? 'Working…'
+          : priceCents > 0
+            ? !methods.card && methods.paypal
+              ? `Pay with PayPal · ${formatPrice(priceCents, currency)}`
+              : `Buy · ${formatPrice(priceCents, currency)}`
+            : 'Enroll free'}
       </button>
-      {priceCents > 0 && paypal && (
+      {priceCents > 0 && methods.card && methods.paypal && (
         <button
           type="button"
           onClick={payWithPayPal}

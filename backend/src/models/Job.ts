@@ -5,6 +5,7 @@ export const JOB_TYPES = [
   'cloudinary_cleanup',
   'fulfilment',
   'booking_reminder',
+  'webinar_reminder',
   'broadcast_send',
 ] as const;
 export type JobType = (typeof JOB_TYPES)[number];

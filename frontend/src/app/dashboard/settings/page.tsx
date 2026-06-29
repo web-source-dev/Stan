@@ -553,6 +553,7 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
   const { authedRequest } = useAuth();
   const [sub, setSub] = useState<Sub | null>(initialSub ?? null);
   const [plans, setPlans] = useState<PlanOpt[]>([]);
+  const [demoCheckout, setDemoCheckout] = useState(true);
   const [invoices, setInvoices] = useState<InvoiceRow[] | null>(null);
   const [busy, setBusy] = useState('');
   const [confirmingCancel, setConfirmingCancel] = useState(false);
@@ -561,15 +562,40 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
   const [step, setStep] = useState<'confirm' | 'processing' | 'done'>('confirm');
 
   const load = useCallback(async () => {
-    const res = await authedRequest<{ subscription: Sub; plans: PlanOpt[] }>('/api/subscription');
+    const res = await authedRequest<{ subscription: Sub; plans: PlanOpt[]; demoCheckout?: boolean }>('/api/subscription');
     setSub(res.subscription);
     setPlans(res.plans ?? []);
+    setDemoCheckout(res.demoCheckout ?? true);
   }, [authedRequest]);
   const loadInvoices = useCallback(async () => {
     const res = await authedRequest<{ invoices: InvoiceRow[] }>('/api/subscription/invoices');
     setInvoices(res.invoices);
   }, [authedRequest]);
   useEffect(() => { void load(); void loadInvoices(); }, [load, loadInvoices]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('plan') === 'success') {
+      const sessionId = params.get('session_id');
+      if (sessionId && !demoCheckout) {
+        void authedRequest<{ subscription: Sub }>('/api/subscription/complete', {
+          method: 'POST',
+          body: { sessionId },
+        })
+          .then((r) => {
+            setSub(r.subscription);
+            emitPlanChanged();
+            void loadInvoices();
+          })
+          .catch(() => void load());
+      } else {
+        void load();
+        void loadInvoices();
+        emitPlanChanged();
+      }
+    }
+  }, [authedRequest, demoCheckout, load, loadInvoices]);
 
   function requestSelect(plan: string) {
     const opt = plans.find((p) => p.key === plan);
@@ -580,16 +606,21 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
     if (!pending) return;
     setStep('processing');
     try {
-      // Demo: with Stripe unconfigured we simulate the checkout end-to-end —
-      // the backend activates the plan and we broadcast the change so feature
-      // gates (sidebar locks, etc.) update everywhere immediately.
-      const res = await authedRequest<{ subscription: Sub }>('/api/subscription/select', { method: 'POST', body: { plan: pending.key } });
-      setSub(res.subscription);
+      const res = await authedRequest<{ subscription?: Sub; url?: string; demo?: boolean }>(
+        '/api/subscription/select',
+        { method: 'POST', body: { plan: pending.key } },
+      );
+      if (res.url) {
+        window.location.href = res.url;
+        return;
+      }
+      if (res.subscription) setSub(res.subscription);
       emitPlanChanged();
-      void loadInvoices(); // a paid plan change just generated a new invoice
+      void loadInvoices();
       setStep('done');
     } catch {
       setPending(null);
+      setStep('confirm');
     }
   }
 
@@ -639,9 +670,11 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
                   ? 'Unlocks everything, including AutoDM and the Stanley AI assistant.'
                   : 'Unlocks unlimited products, courses, bookings, email broadcasts & flows, and landing pages.'}
             </p>
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800">
-              Demo mode: Stripe isn&apos;t configured, so this is a simulated checkout — no card is charged.
-            </div>
+            {demoCheckout && pending.tier !== 'free' && (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800">
+                Demo mode: Stripe isn&apos;t configured, so this is a simulated checkout — no card is charged.
+              </div>
+            )}
           </div>
         )}
         {step === 'processing' && (
@@ -778,14 +811,23 @@ function BillingTab({ initialSub }: { initialSub?: Sub }) {
 /* Payments                                                            */
 /* ------------------------------------------------------------------ */
 
-interface ConnectStatus { chargesEnabled?: boolean; payoutsEnabled?: boolean; detailsSubmitted?: boolean; }
+interface ConnectStatus {
+  connected?: boolean;
+  chargesEnabled?: boolean;
+  payoutsEnabled?: boolean;
+  detailsSubmitted?: boolean;
+  stripeConfigured?: boolean;
+  demoCheckout?: boolean;
+}
 
 interface PayPalStatus { connected: boolean; email: string; configured: boolean; demo: boolean }
 
 function PaymentsTab() {
   const { authedRequest } = useAuth();
+  const router = useRouter();
   const [status, setStatus] = useState<ConnectStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [connectMsg, setConnectMsg] = useState('');
   const [gdpr, setGdpr] = useState(true);
   const [terms, setTerms] = useState(false);
 
@@ -794,17 +836,52 @@ function PaymentsTab() {
   const [ppBusy, setPpBusy] = useState(false);
   const [ppErr, setPpErr] = useState('');
 
+  const refreshStatus = useCallback(
+    async (fromStripe = false) => {
+      try {
+        const res = await authedRequest<{ account: ConnectStatus }>(
+          `/api/payments/connect/status${fromStripe ? '?refresh=1' : ''}`,
+        );
+        setStatus(res.account);
+        return res.account;
+      } catch {
+        return null;
+      }
+    },
+    [authedRequest],
+  );
+
   useEffect(() => {
-    authedRequest<{ account: ConnectStatus }>('/api/payments/connect/status').then((r) => setStatus(r.account)).catch(() => {});
+    const params = new URLSearchParams(window.location.search);
+    const connect = params.get('connect');
+    const fromStripe = connect === 'return' || connect === 'refresh';
+    void refreshStatus(fromStripe).then((account) => {
+      if (connect === 'return') {
+        if (account?.chargesEnabled) {
+          setConnectMsg('Stripe connected — you can accept card payments.');
+        } else if (account?.connected) {
+          setConnectMsg('Stripe account linked. Finish any remaining verification steps in Stripe if prompted.');
+        } else {
+          setConnectMsg('Returned from Stripe. If setup is complete, try refreshing this page.');
+        }
+      }
+      if (fromStripe) {
+        router.replace('/dashboard/settings?tab=payments', { scroll: false });
+      }
+    });
     authedRequest<{ paypal: PayPalStatus }>('/api/payments/connect/paypal/status')
       .then((r) => { setPp(r.paypal); setPpEmail(r.paypal.email); })
       .catch(() => {});
-  }, [authedRequest]);
+  }, [authedRequest, refreshStatus, router]);
 
   async function register() {
     setBusy(true);
+    setConnectMsg('');
     try {
-      const res = await authedRequest<{ url: string }>('/api/payments/connect/onboard', { method: 'POST' });
+      const res = await authedRequest<{ url: string }>('/api/payments/connect/onboard', {
+        method: 'POST',
+        body: { returnBase: window.location.origin },
+      });
       window.location.href = res.url;
     } catch { setBusy(false); }
   }
@@ -836,6 +913,10 @@ function PaymentsTab() {
     <div className={CARD}>
       <h2 className="text-lg font-bold tracking-tight text-[#1a1c3a]">Payment Methods</h2>
       <p className="mt-1 text-sm text-neutral-500">Please connect your bank account using a Payment Provider to start selling!</p>
+
+      {connectMsg && (
+        <p className="mt-3 rounded-xl border border-brand-200 bg-brand-50 px-3.5 py-2.5 text-sm text-brand-800">{connectMsg}</p>
+      )}
 
       <div className="mt-5 max-w-2xl">
         <div className="flex items-center justify-between gap-4 rounded-2xl bg-surface-subtle px-6 py-5">
@@ -933,7 +1014,7 @@ function NotificationsTab() {
 
   async function toggle(key: string) {
     if (!prefs) return;
-    const nextVal = !prefs[key];
+    const nextVal = prefs[key] === false;
     setPrefs({ ...prefs, [key]: nextVal });
     await authedRequest('/api/account/notifications', { method: 'PATCH', body: { [key]: nextVal } }).catch(() => {});
   }
@@ -948,7 +1029,7 @@ function NotificationsTab() {
           <div className="space-y-5">
             {PREFS.filter((p) => p.group === group).map((p) => (
               <div key={p.key} className="flex items-start gap-3">
-                <Toggle on={!!prefs[p.key]} onClick={() => toggle(p.key)} />
+                <Toggle on={prefs[p.key] !== false} onClick={() => toggle(p.key)} />
                 <div>
                   <div className="font-bold text-[#1a1c3a]">{p.title}</div>
                   <p className="mt-0.5 text-sm leading-relaxed text-neutral-500">{p.body}</p>
@@ -1327,12 +1408,20 @@ function SecurityTab() {
 function SettingsView() {
   const params = useSearchParams();
   const router = useRouter();
-  const initial = params.get('tab');
-  const [tab, setTab] = useState<TabKey>(initial && VALID.includes(initial as TabKey) ? (initial as TabKey) : 'profile');
+  const tabParam = params.get('tab');
+  const connectParam = params.get('connect');
+  const initial: TabKey =
+    tabParam && VALID.includes(tabParam as TabKey)
+      ? (tabParam as TabKey)
+      : connectParam
+        ? 'payments'
+        : 'profile';
+  const [tab, setTab] = useState<TabKey>(initial);
 
   useEffect(() => {
     const t = params.get('tab');
     if (t && VALID.includes(t as TabKey)) setTab(t as TabKey);
+    else if (params.get('connect')) setTab('payments');
   }, [params]);
 
   function go(t: TabKey) {

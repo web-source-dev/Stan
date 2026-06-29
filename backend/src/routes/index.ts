@@ -15,9 +15,11 @@ import { analyticsRouter } from '../modules/analytics/analytics.routes';
 import { broadcastsRouter } from '../modules/broadcasts/broadcasts.routes';
 import { coursesRouter } from '../modules/courses/courses.routes';
 import { webinarsRouter } from '../modules/webinars/webinars.routes';
+import { webinarRegistrationsRouter } from '../modules/webinars/webinar-registrations.routes';
 import { learnRouter } from '../modules/learn/learn.routes';
 import { bookingTypesRouter, bookingsRouter } from '../modules/bookings/bookings.routes';
 import { referralsRouter } from '../modules/referrals/referrals.routes';
+import { affiliatesRouter } from '../modules/affiliates/affiliates.routes';
 import { flowsRouter } from '../modules/flows/flows.routes';
 import { autodmRouter } from '../modules/autodm/autodm.routes';
 import { landingRouter } from '../modules/landing/landing.routes';
@@ -52,12 +54,14 @@ apiRouter.use('/broadcasts', broadcastsRouter);
 // Learning & service phase
 apiRouter.use('/courses', coursesRouter);
 apiRouter.use('/webinars', webinarsRouter);
+apiRouter.use('/webinar-registrations', webinarRegistrationsRouter);
 apiRouter.use('/learn', learnRouter);
 apiRouter.use('/booking-types', bookingTypesRouter);
 apiRouter.use('/bookings', bookingsRouter);
 
 // Growth & monetization modules
 apiRouter.use('/referrals', referralsRouter);
+apiRouter.use('/affiliates', affiliatesRouter);
 apiRouter.use('/flows', flowsRouter);
 apiRouter.use('/autodm', autodmRouter);
 apiRouter.use('/landing', landingRouter);

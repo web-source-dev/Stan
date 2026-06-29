@@ -19,6 +19,7 @@ export function defaultStoreBlocks(): Block[] {
     createBlock('product'),
     createBlock('course'),
     createBlock('booking'),
+    createBlock('webinar'),
     createBlock('leadMagnet'),
     createBlock('links'),
     createBlock('emailCapture'),
@@ -26,9 +27,9 @@ export function defaultStoreBlocks(): Block[] {
 }
 
 /** Section types that may exist at most once (a second renders identical content). */
-const SINGLE_INSTANCE_TYPES: BlockType[] = ['product', 'course', 'booking', 'leadMagnet', 'links', 'emailCapture'];
+const SINGLE_INSTANCE_TYPES: BlockType[] = ['product', 'course', 'booking', 'webinar', 'leadMagnet', 'links', 'emailCapture'];
 /** Collection sections always show their full catalog in this editor. */
-const COLLECTION_TYPES: BlockType[] = ['product', 'course', 'booking', 'leadMagnet'];
+const COLLECTION_TYPES: BlockType[] = ['product', 'course', 'booking', 'webinar', 'leadMagnet'];
 
 /** Migrate older/loose persisted blocks into builder Blocks with full config. */
 export function hydrateBlocks(

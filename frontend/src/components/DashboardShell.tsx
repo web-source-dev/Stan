@@ -18,6 +18,7 @@ import {
   IconChart,
   IconSmile,
   IconSend,
+  IconUsers,
   IconSettings,
   IconLogout,
   IconExternal,
@@ -64,6 +65,7 @@ const PRIMARY_NAV: NavItem[] = [
   { key: 'income', label: 'Income', href: '/dashboard/orders', icon: IconDollar, sparkle: true },
   { key: 'analytics', label: 'Analytics', href: '/dashboard/analytics', icon: IconChart, sparkle: true },
   { key: 'customers', label: 'Customers', href: '/dashboard/leads', icon: IconHeart, sparkle: true },
+  { key: 'affiliates', label: 'Affiliates', href: '/dashboard/affiliates', icon: IconUsers, sparkle: true },
   { key: 'appointments', label: 'Appointments', href: '/dashboard/bookings', icon: IconClock, sparkle: true, requiredFeature: 'bookings' },
   { key: 'referrals', label: 'Referrals', href: '/dashboard/referrals', icon: IconSmile, sparkle: true },
   { key: 'emails', label: 'Email Flows', href: '/dashboard/emails', icon: IconMail, sparkle: true, requiredFeature: 'email' },
@@ -327,6 +329,16 @@ function ShellInner({
     window.addEventListener(PLAN_CHANGED_EVENT, loadFeatures);
     return () => window.removeEventListener(PLAN_CHANGED_EVENT, loadFeatures);
   }, [load, authedRequest]);
+
+  // Legacy Stripe Connect return URLs pointed at /dashboard?connect=return — send
+  // creators to Settings → Payments on the same origin so cookies + refresh work.
+  useEffect(() => {
+    if (typeof window === 'undefined' || pathname !== '/dashboard') return;
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has('connect')) return;
+    const connect = params.get('connect') ?? 'return';
+    router.replace(`/dashboard/settings?tab=payments&connect=${connect}`);
+  }, [pathname, router]);
 
   const onLogout = useCallback(async () => {
     await logout();

@@ -29,6 +29,7 @@ export async function triggerFlows(
           to: recipientEmail,
           template: 'broadcast',
           data: { subject: step.subject, bodyText: step.body, fromName, unsubscribeUrl },
+          fromName,
         },
         { runAt },
       );
@@ -42,15 +43,24 @@ export async function triggerFlows(
 /** Fire product-specific post-purchase email steps stored on the product. */
 export async function triggerProductEmailFlows(product: ProductDoc, recipientEmail: string): Promise<void> {
   const steps = product.emailFlows.filter((s) => s.enabled);
+  if (!steps.length) return;
+
+  const profile = await CreatorProfileModel.findOne({ userId: product.creatorId }).select('displayName username');
+  const fromName = profile?.displayName || profile?.username || 'CreatorStore';
+  const unsubscribeUrl = `${env.APP_URL}/unsubscribe?c=${product.creatorId}&e=${encodeURIComponent(recipientEmail)}&t=${unsubscribeToken(String(product.creatorId), recipientEmail)}`;
+
   for (const step of steps) {
     const runAt = new Date(Date.now() + Math.max(0, step.dayOffset) * DAY_MS);
     await enqueueJob(
       'send_email',
-      { to: recipientEmail, template: 'broadcast', data: { subject: step.subject, bodyText: step.body } },
+      {
+        to: recipientEmail,
+        template: 'broadcast',
+        data: { subject: step.subject, bodyText: step.body, fromName, unsubscribeUrl },
+        fromName,
+      },
       { runAt },
     );
   }
-  if (steps.length) {
-    logger.info({ productId: product.id, steps: steps.length, to: recipientEmail }, 'Product email flow triggered');
-  }
+  logger.info({ productId: product.id, steps: steps.length, to: recipientEmail }, 'Product email flow triggered');
 }

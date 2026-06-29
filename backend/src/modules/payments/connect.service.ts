@@ -1,18 +1,73 @@
 import type Stripe from 'stripe';
 import { env } from '../../config/env';
 import { requireStripe } from '../../lib/stripe';
+import { AppError } from '../../utils/AppError';
 import { PaymentAccountModel, type PaymentAccountDoc } from '../../models/PaymentAccount';
 import { UserModel } from '../../models/User';
 import { recordAudit } from '../../lib/audit';
 
+/** Seed/demo account ids are not real Stripe Connect accounts. */
+const PLACEHOLDER_STRIPE_ACCOUNT = /^acct_(seed_|demo)/;
+
+/** Use the browser origin when allowed (fixes localhost:3000 vs :3001 mismatches). */
+export function resolveAppUrl(candidate?: string): string {
+  const fallback = env.APP_URL.replace(/\/+$/, '');
+  if (!candidate?.trim()) return fallback;
+  try {
+    const origin = new URL(candidate.trim()).origin;
+    const allowed = env.CORS_ORIGINS.split(',')
+      .map((o) => o.trim())
+      .filter(Boolean);
+    if (
+      allowed.some((o) => {
+        try {
+          return new URL(o).origin === origin;
+        } catch {
+          return false;
+        }
+      })
+    ) {
+      return origin;
+    }
+  } catch {
+    /* ignore malformed candidate */
+  }
+  return fallback;
+}
+
+export function isPlaceholderStripeAccountId(id?: string | null): boolean {
+  return Boolean(id && PLACEHOLDER_STRIPE_ACCOUNT.test(id));
+}
+
+/** Remove fake Connect ids left by seed data when real Stripe keys are in use. */
+export async function clearPlaceholderStripeAccounts(): Promise<void> {
+  if (!env.stripeConfigured) return;
+  await PaymentAccountModel.updateMany(
+    { stripeAccountId: { $regex: /^acct_(seed_|demo)/ } },
+    {
+      $unset: { stripeAccountId: '' },
+      $set: {
+        chargesEnabled: false,
+        payoutsEnabled: false,
+        detailsSubmitted: false,
+        onboardingStatus: 'not_started',
+        requirementsDue: [],
+      },
+    },
+  );
+}
+
 function publicStatus(acc: PaymentAccountDoc | null) {
+  const connected = Boolean(acc?.stripeAccountId && !isPlaceholderStripeAccountId(acc.stripeAccountId));
   return {
-    connected: Boolean(acc?.stripeAccountId),
-    chargesEnabled: acc?.chargesEnabled ?? false,
-    payoutsEnabled: acc?.payoutsEnabled ?? false,
-    detailsSubmitted: acc?.detailsSubmitted ?? false,
-    onboardingStatus: acc?.onboardingStatus ?? 'not_started',
-    requirementsDue: acc?.requirementsDue ?? [],
+    connected,
+    chargesEnabled: connected && (acc?.chargesEnabled ?? false),
+    payoutsEnabled: connected && (acc?.payoutsEnabled ?? false),
+    detailsSubmitted: connected && (acc?.detailsSubmitted ?? false),
+    onboardingStatus: connected ? (acc?.onboardingStatus ?? 'not_started') : 'not_started',
+    requirementsDue: connected ? (acc?.requirementsDue ?? []) : [],
+    stripeConfigured: env.stripeConfigured,
+    demoCheckout: env.demoCheckout,
   };
 }
 
@@ -30,7 +85,7 @@ function applyAccountState(acc: PaymentAccountDoc, account: Stripe.Account) {
 export async function ensureAccount(creatorId: string): Promise<PaymentAccountDoc> {
   const stripe = requireStripe();
   let acc = await PaymentAccountModel.findOne({ creatorId });
-  if (acc?.stripeAccountId) return acc;
+  if (acc?.stripeAccountId && !isPlaceholderStripeAccountId(acc.stripeAccountId)) return acc;
 
   const user = await UserModel.findById(creatorId);
   const account = await stripe.accounts.create({
@@ -50,13 +105,15 @@ export async function ensureAccount(creatorId: string): Promise<PaymentAccountDo
 }
 
 /** Create a one-time onboarding link to Stripe-hosted Express onboarding. */
-export async function createOnboardingLink(creatorId: string): Promise<{ url: string }> {
+export async function createOnboardingLink(creatorId: string, returnBase?: string): Promise<{ url: string }> {
   const stripe = requireStripe();
   const acc = await ensureAccount(creatorId);
+  const appUrl = resolveAppUrl(returnBase);
+  const settingsPayments = `${appUrl}/dashboard/settings?tab=payments`;
   const link = await stripe.accountLinks.create({
     account: acc.stripeAccountId!,
-    refresh_url: `${env.APP_URL}/dashboard?connect=refresh`,
-    return_url: `${env.APP_URL}/dashboard?connect=return`,
+    refresh_url: `${settingsPayments}&connect=refresh`,
+    return_url: `${settingsPayments}&connect=return`,
     type: 'account_onboarding',
   });
   return { url: link.url };
@@ -86,18 +143,26 @@ export async function syncFromWebhook(account: Stripe.Account): Promise<void> {
   await acc.save();
 }
 
-/** True when the creator can accept payments (required to publish paid offers). */
+/** True when the creator can accept card payments via Stripe Connect. */
 export async function canAcceptPayments(creatorId: string): Promise<boolean> {
-  // In dev demo mode there is no Stripe Connect, but checkout is simulated, so
-  // every creator can "accept payments" and publish paid offers.
   if (env.demoCheckout) return true;
+  if (!env.stripeConfigured) return false;
+
   const acc = await PaymentAccountModel.findOne({ creatorId });
-  return Boolean(acc?.chargesEnabled);
+  if (!acc?.stripeAccountId || isPlaceholderStripeAccountId(acc.stripeAccountId)) return false;
+
+  if (!acc.chargesEnabled) {
+    await refreshStatus(creatorId).catch(() => {});
+    const refreshed = await PaymentAccountModel.findOne({ creatorId });
+    return Boolean(refreshed?.chargesEnabled && !isPlaceholderStripeAccountId(refreshed.stripeAccountId));
+  }
+  return true;
 }
 
 export async function getConnectedAccountId(creatorId: string): Promise<string | null> {
   const acc = await PaymentAccountModel.findOne({ creatorId });
-  return acc?.stripeAccountId ?? null;
+  if (!acc?.stripeAccountId || isPlaceholderStripeAccountId(acc.stripeAccountId)) return null;
+  return acc.stripeAccountId;
 }
 
 /* ------------------------------------------------------------------ */
@@ -125,6 +190,9 @@ export async function canAcceptPayPal(creatorId: string): Promise<boolean> {
 export async function setPayPalEmail(creatorId: string, email: string) {
   const acc = (await PaymentAccountModel.findOne({ creatorId })) ?? new PaymentAccountModel({ creatorId });
   const clean = email.trim().toLowerCase();
+  if (clean && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean)) {
+    throw new AppError(400, 'invalid_email', 'Enter a valid PayPal email address');
+  }
   acc.paypalEmail = clean;
   acc.paypalConnectedAt = clean ? new Date() : undefined;
   await acc.save();

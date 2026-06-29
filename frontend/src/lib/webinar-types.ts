@@ -40,6 +40,8 @@ export interface WebinarEditorState {
   emailFlows: ProductEmailFlowStep[];
   confirmSubject: string;
   confirmBody: string;
+  meetingUrl: string;
+  replayUrl: string;
 }
 
 export const WEBINAR_TIMEZONES = BOOKING_TIMEZONES;
@@ -106,6 +108,8 @@ export function buildInitialWebinar(): WebinarEditorState {
     emailFlows: defaultEmailFlowSteps().map((s, i) => ({ ...s, id: `step_${i}` })),
     confirmSubject: 'Your webinar spot is confirmed',
     confirmBody: DEFAULT_CONFIRM_BODY,
+    meetingUrl: '',
+    replayUrl: '',
   };
 }
 
@@ -134,6 +138,8 @@ export type ApiWebinar = {
   customFields?: { id: string; label: string; type: 'text' | 'textarea' | 'phone'; required: boolean }[];
   confirmSubject?: string;
   confirmBody?: string;
+  meetingUrl?: string;
+  replayUrl?: string;
   status?: string;
 };
 
@@ -179,6 +185,8 @@ export function webinarFromApi(w: ApiWebinar): WebinarEditorState {
     })),
     confirmSubject: w.confirmSubject ?? DEFAULT_CONFIRM_SUBJECT,
     confirmBody: w.confirmBody ?? DEFAULT_CONFIRM_BODY,
+    meetingUrl: w.meetingUrl ?? '',
+    replayUrl: w.replayUrl ?? '',
   };
 }
 
@@ -220,5 +228,7 @@ export function buildWebinarBody(form: WebinarEditorState) {
     customFields: form.customFields.map(({ label, type, required }) => ({ label, type, required })),
     confirmSubject: form.confirmSubject,
     confirmBody: form.confirmBody,
+    meetingUrl: form.meetingUrl,
+    replayUrl: form.replayUrl,
   };
 }

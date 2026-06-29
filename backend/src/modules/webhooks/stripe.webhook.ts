@@ -4,9 +4,10 @@ import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { stripe } from '../../lib/stripe';
 import { WebhookEventModel } from '../../models/WebhookEvent';
+import { SubscriptionModel, PLANS, type PlanKey } from '../../models/Subscription';
 import { fulfilCheckoutSession, markRefunded } from '../checkout/fulfilment.service';
 import { syncFromWebhook } from '../payments/connect.service';
-import { SubscriptionModel } from '../../models/Subscription';
+import { activateSubscriptionPlan } from '../subscription/subscription.service';
 
 /**
  * Stripe webhook receiver. Mounted before the JSON parser with a raw body so
@@ -80,7 +81,39 @@ export async function processEvent(event: Stripe.Event): Promise<void> {
         }
         break;
       }
+      if (session.metadata?.itemType === 'subscription_plan') {
+        const userId = session.metadata.userId;
+        const plan = session.metadata.plan as PlanKey;
+        if (userId && plan in PLANS) {
+          await activateSubscriptionPlan(userId, plan);
+        }
+        break;
+      }
       await fulfilCheckoutSession(session, event.account);
+      break;
+    }
+    case 'invoice.paid': {
+      const invoice = event.data.object as Stripe.Invoice;
+      const { handleMembershipInvoicePaid } = await import('../checkout/membership.service');
+      await handleMembershipInvoicePaid(invoice, event.account);
+      break;
+    }
+    case 'invoice.payment_failed': {
+      const invoice = event.data.object as Stripe.Invoice;
+      const { handleMembershipInvoicePaymentFailed } = await import('../checkout/membership.service');
+      await handleMembershipInvoicePaymentFailed(invoice);
+      break;
+    }
+    case 'customer.subscription.deleted': {
+      const subscription = event.data.object as Stripe.Subscription;
+      const { handleMembershipSubscriptionEnded } = await import('../checkout/membership.service');
+      await handleMembershipSubscriptionEnded(subscription, event.account);
+      break;
+    }
+    case 'customer.subscription.updated': {
+      const subscription = event.data.object as Stripe.Subscription;
+      const { handleMembershipSubscriptionUpdated } = await import('../checkout/membership.service');
+      await handleMembershipSubscriptionUpdated(subscription);
       break;
     }
     case 'charge.refunded': {

@@ -1,31 +1,30 @@
 import { connectDb, disconnectDb } from './config/db';
 import { logger } from './config/logger';
-import { startJobRunner, stopJobRunner } from './lib/jobRunner';
-import { registerBroadcastJobs } from './modules/broadcasts/broadcasts.service';
-import { startBookingMaintenance, registerBookingJobs } from './modules/bookings/bookings.service';
-import { startSubscriptionMaintenance } from './modules/subscription/subscription.service';
+import { startBackgroundWorkers, stopBackgroundWorkers } from './lib/workerBootstrap';
 
 /**
- * Optional standalone worker process. In the foundation phase the job runner
- * also runs in-process with the API (see index.ts); this entry exists so the
- * queue can be scaled out to a dedicated process without code changes.
+ * Dedicated background worker process. Polls the MongoDB job queue for emails,
+ * broadcast sends, booking reminders, and runs periodic maintenance sweeps.
+ *
+ * Production:  npm run build && npm run start:worker
+ * Development: npm run dev:worker   (third terminal alongside API + frontend)
+ *
+ * When this process is running, set JOB_RUNNER_IN_PROCESS=false on the API so
+ * only one process claims jobs from the queue.
  */
 async function main() {
   await connectDb();
-  registerBroadcastJobs();
-  registerBookingJobs();
-  startBookingMaintenance();
-  startSubscriptionMaintenance();
-  startJobRunner();
-  logger.info('Worker process started');
+  startBackgroundWorkers();
+  logger.info('Worker process ready');
 
-  const shutdown = async () => {
-    stopJobRunner();
+  const shutdown = async (signal: string) => {
+    logger.info(`${signal} received, shutting down worker`);
+    stopBackgroundWorkers();
     await disconnectDb();
     process.exit(0);
   };
-  process.on('SIGINT', () => void shutdown());
-  process.on('SIGTERM', () => void shutdown());
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
 main().catch((err) => {

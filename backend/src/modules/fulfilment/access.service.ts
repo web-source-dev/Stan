@@ -6,9 +6,10 @@ import { signPortalToken, verifyPortalToken } from '../../lib/jwt';
 import { enqueueEmail } from '../../lib/jobs';
 import { signedDeliveryUrl } from '../../lib/cloudinary';
 import { EntitlementModel, type EntitlementDoc } from '../../models/Entitlement';
+import { OrderModel, type OrderDoc } from '../../models/Order';
 import { ProductModel, type ProductDoc } from '../../models/Product';
 import { CustomerLoginCodeModel } from '../../models/CustomerLoginCode';
-import { CreatorProfileModel } from '../../models/CreatorProfile';
+import { resolveCreatorBranding } from '../../lib/creatorNotifications';
 
 /**
  * Email-gated buyer access to a digital purchase.
@@ -24,12 +25,42 @@ import { CreatorProfileModel } from '../../models/CreatorProfile';
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_ATTEMPTS = 5;
 
-async function resolveEntitlement(token: string): Promise<{ entitlement: EntitlementDoc; product: ProductDoc }> {
+type FulfillmentAsset = {
+  _id?: unknown;
+  publicId: string;
+  resourceType: string;
+  filename: string;
+  bytes: number;
+  format?: string;
+};
+
+async function loadOrderForEntitlement(entitlement: EntitlementDoc): Promise<OrderDoc | null> {
+  if (!entitlement.orderId) return null;
+  return OrderModel.findById(entitlement.orderId);
+}
+
+async function resolveEntitlement(token: string): Promise<{
+  entitlement: EntitlementDoc;
+  product: ProductDoc;
+  order: OrderDoc | null;
+}> {
   const entitlement = await EntitlementModel.findOne({ accessToken: token });
   if (!entitlement || entitlement.revokedAt) throw AppError.notFound('Access not found or revoked');
   const product = await ProductModel.findById(entitlement.productId);
   if (!product) throw AppError.notFound('Product no longer available');
-  return { entitlement, product };
+  const order = await loadOrderForEntitlement(entitlement);
+  return { entitlement, product, order };
+}
+
+function isCustomPending(product: ProductDoc, order: OrderDoc | null): boolean {
+  return product.productKind === 'custom' && order?.fulfilmentStatus !== 'fulfilled';
+}
+
+function deliveryAssets(product: ProductDoc, order: OrderDoc | null): FulfillmentAsset[] {
+  if (product.productKind === 'custom' && order?.fulfilmentStatus === 'fulfilled') {
+    return (order.get('fulfillmentAssets') as FulfillmentAsset[]) ?? [];
+  }
+  return product.assets as FulfillmentAsset[];
 }
 
 /** "john@gmail.com" -> "j•••@gmail.com" — a hint without revealing the address. */
@@ -40,23 +71,35 @@ function maskEmail(email: string): string {
 }
 
 /** Public-safe product info (no delivery destination — that's gated). */
-function publicProduct(product: ProductDoc) {
+function publicProduct(product: ProductDoc, order: OrderDoc | null) {
   return {
     title: product.title,
     shortDescription: product.shortDescription,
     thankYouMessage: product.thankYouMessage,
     coverImageUrl: product.coverImageUrl,
     deliveryMode: product.deliveryMode,
+    productKind: product.productKind,
+    fulfilmentNote: product.productKind === 'custom' ? product.fulfilmentNote || '' : '',
+    fulfillmentPending: isCustomPending(product, order),
   };
 }
 
 /** Full product info, only returned once the buyer is verified. */
-function unlockedProduct(product: ProductDoc) {
+function unlockedProduct(product: ProductDoc, order: OrderDoc | null) {
+  const customFulfilled = product.productKind === 'custom' && order?.fulfilmentStatus === 'fulfilled';
+  const customPending = isCustomPending(product, order);
   return {
-    ...publicProduct(product),
-    // Buyers preview by default; downloading is opt-in per product.
-    allowDownload: Boolean(product.allowDownload),
-    redirectUrl: product.deliveryMode === 'url' ? product.redirectUrl || product.accessUrl || '' : '',
+    ...publicProduct(product, order),
+    allowDownload: customFulfilled ? true : Boolean(product.allowDownload),
+    fulfillmentMessage: customFulfilled ? (order?.get('fulfillmentMessage') as string) ?? '' : '',
+    redirectUrl: customFulfilled
+      ? (order?.get('fulfillmentDeliveryUrl') as string) || ''
+      : product.deliveryMode === 'url'
+        ? product.redirectUrl || product.accessUrl || ''
+        : product.productKind === 'membership'
+          ? product.accessUrl || ''
+          : '',
+    fulfillmentPending: customPending,
   };
 }
 
@@ -76,12 +119,13 @@ function isPreviewable(asset: { resourceType: string; format?: string; filename?
   return false;
 }
 
-function listFiles(product: ProductDoc) {
-  return product.assets.map((a) => ({
+function listFiles(product: ProductDoc, order: OrderDoc | null) {
+  if (isCustomPending(product, order)) return [];
+  return deliveryAssets(product, order).map((a) => ({
     id: String(a._id),
     filename: a.filename,
     bytes: a.bytes,
-    format: a.format,
+    format: a.format ?? '',
     resourceType: a.resourceType,
     previewable: isPreviewable(a),
   }));
@@ -89,11 +133,14 @@ function listFiles(product: ProductDoc) {
 
 /** Step 1: what the access page shows BEFORE the buyer verifies their email. */
 export async function getAccessMeta(token: string) {
-  const { entitlement, product } = await resolveEntitlement(token);
+  const { entitlement, product, order } = await resolveEntitlement(token);
+  const pending = isCustomPending(product, order);
+  const assets = deliveryAssets(product, order);
   return {
-    product: publicProduct(product),
+    product: publicProduct(product, order),
     emailHint: maskEmail(entitlement.buyerEmail),
-    fileCount: product.assets.length,
+    fileCount: pending ? 0 : assets.length,
+    fulfillmentPending: pending,
   };
 }
 
@@ -120,11 +167,17 @@ export async function requestAccessCode(token: string, emailRaw: string) {
     expiresAt: new Date(Date.now() + CODE_TTL_MS),
   });
 
-  const profile = await CreatorProfileModel.findOne({ userId: creatorId });
-  await enqueueEmail(email, 'customer_login_code', {
-    code,
-    creatorName: profile?.displayName || profile?.username || 'the creator',
-  }).catch(() => {});
+  const branding = await resolveCreatorBranding(creatorId).catch(() => ({
+    displayName: 'the creator',
+    username: '',
+    replyTo: undefined as string | undefined,
+  }));
+  await enqueueEmail(
+    email,
+    'customer_login_code',
+    { code, creatorName: branding.displayName },
+    { fromName: branding.displayName, replyTo: branding.replyTo },
+  ).catch(() => {});
 
   // Dev convenience only: surface the code in non-production so the flow is
   // testable without an inbox (mirrors the portal + app email bypass).
@@ -133,7 +186,7 @@ export async function requestAccessCode(token: string, emailRaw: string) {
 
 /** Step 3: verify the code and mint a buyer session bound to (email, creator). */
 export async function verifyAccessCode(token: string, emailRaw: string, codeRaw: string) {
-  const { entitlement, product } = await resolveEntitlement(token);
+  const { entitlement, product, order } = await resolveEntitlement(token);
   const email = emailRaw.toLowerCase().trim();
   const generic = 'That code is invalid or has expired. Request a new one.';
 
@@ -159,8 +212,8 @@ export async function verifyAccessCode(token: string, emailRaw: string, codeRaw:
 
   return {
     session: signPortalToken({ sub: email, creatorId }),
-    product: unlockedProduct(product),
-    files: listFiles(product),
+    product: unlockedProduct(product, order),
+    files: listFiles(product, order),
   };
 }
 
@@ -174,19 +227,23 @@ async function authorize(token: string, authHeader: string | undefined) {
   } catch {
     throw AppError.unauthorized('Your session expired — verify your email again.');
   }
-  const { entitlement, product } = await resolveEntitlement(token);
+  const { entitlement, product, order } = await resolveEntitlement(token);
   if (payload.sub !== entitlement.buyerEmail || payload.creatorId !== String(entitlement.creatorId)) {
     throw AppError.forbidden('This link belongs to a different purchase.');
   }
-  return { entitlement, product };
+  return { entitlement, product, order };
 }
 
 /** Re-list files for a returning buyer who still holds a valid session. */
 export async function getAccessFiles(token: string, authHeader: string | undefined) {
-  const { entitlement, product } = await authorize(token, authHeader);
+  const { entitlement, product, order } = await authorize(token, authHeader);
   entitlement.lastAccessedAt = new Date();
   await entitlement.save();
-  return { product: unlockedProduct(product), files: listFiles(product) };
+  return { product: unlockedProduct(product, order), files: listFiles(product, order) };
+}
+
+function findAsset(product: ProductDoc, order: OrderDoc | null, fileId: string): FulfillmentAsset | undefined {
+  return deliveryAssets(product, order).find((a) => String(a._id) === fileId);
 }
 
 /**
@@ -197,8 +254,9 @@ export async function mintPreviewUrl(token: string, authHeader: string | undefin
   if (!env.cloudinaryConfigured) {
     throw new AppError(503, 'cloudinary_unconfigured', 'Previews are not configured');
   }
-  const { entitlement, product } = await authorize(token, authHeader);
-  const asset = product.assets.find((a) => String(a._id) === fileId);
+  const { entitlement, product, order } = await authorize(token, authHeader);
+  if (isCustomPending(product, order)) throw AppError.badRequest('Your order is still being prepared.');
+  const asset = findAsset(product, order, fileId);
   if (!asset) throw AppError.notFound('File not found');
 
   const url = signedDeliveryUrl(asset.publicId, asset.resourceType, 600);
@@ -215,12 +273,14 @@ export async function mintDownloadUrl(token: string, authHeader: string | undefi
   if (!env.cloudinaryConfigured) {
     throw new AppError(503, 'cloudinary_unconfigured', 'Downloads are not configured');
   }
-  const { entitlement, product } = await authorize(token, authHeader);
-  const asset = product.assets.find((a) => String(a._id) === fileId);
+  const { entitlement, product, order } = await authorize(token, authHeader);
+  if (isCustomPending(product, order)) throw AppError.badRequest('Your order is still being prepared.');
+  const asset = findAsset(product, order, fileId);
   if (!asset) throw AppError.notFound('File not found');
+  const customFulfilled = product.productKind === 'custom' && order?.fulfilmentStatus === 'fulfilled';
   // Preview-only blocks downloads of *previewable* files. Non-previewable files
   // (ZIP, etc.) have no in-browser view, so they're always downloadable.
-  if (!product.allowDownload && isPreviewable(asset)) {
+  if (!customFulfilled && !product.allowDownload && isPreviewable(asset)) {
     throw AppError.forbidden('This file is preview-only — downloads are disabled by the creator.');
   }
 

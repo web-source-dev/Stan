@@ -406,3 +406,51 @@ export async function creatorIdForIgAccount(igAccountId: string): Promise<string
   const doc = await IntegrationModel.findOne({ provider: 'instagram', externalAccountId: igAccountId });
   return doc ? String(doc.creatorId) : null;
 }
+
+/**
+ * Refresh a long-lived Instagram user token (~60 days). Marks the integration
+ * disconnected when refresh fails so the creator is prompted to reconnect.
+ */
+export async function refreshLongLivedToken(integration: IntegrationDoc): Promise<boolean> {
+  const token = integration.get('accessToken') as string | undefined;
+  if (!token) {
+    integration.status = 'disconnected';
+    await integration.save();
+    return false;
+  }
+
+  const url =
+    `${GRAPH}/refresh_access_token?` +
+    new URLSearchParams({ grant_type: 'ig_refresh_token', access_token: token }).toString();
+  const res = await fetch(url);
+  const body = (await res.json().catch(() => ({}))) as {
+    access_token?: string;
+    expires_in?: number;
+    error?: { message?: string };
+  };
+
+  if (!res.ok || !body.access_token) {
+    logger.warn(
+      { integrationId: integration.id, err: body.error?.message },
+      'Instagram token refresh failed — disconnecting',
+    );
+    integration.status = 'disconnected';
+    integration.set('accessToken', '');
+    integration.externalAccountId = '';
+    integration.tokenExpiresAt = undefined;
+    await integration.save();
+    return false;
+  }
+
+  integration.set('accessToken', body.access_token);
+  integration.tokenExpiresAt = body.expires_in
+    ? new Date(Date.now() + body.expires_in * 1000)
+    : undefined;
+  await integration.save();
+  return true;
+}
+
+/** Whether this integration has a real OAuth token (live delivery), not demo-only. */
+export function isLiveInstagramConnection(doc: IntegrationDoc | null | undefined): boolean {
+  return Boolean(env.instagramConfigured && doc?.status === 'connected' && doc.externalAccountId);
+}

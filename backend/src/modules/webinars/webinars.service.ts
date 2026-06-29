@@ -1,8 +1,20 @@
+import { DateTime } from 'luxon';
+import type Stripe from 'stripe';
+import { Types } from 'mongoose';
+import { env } from '../../config/env';
+import { logger } from '../../config/logger';
 import { AppError } from '../../utils/AppError';
-import { WebinarModel, type WebinarDoc } from '../../models/Webinar';
+import { WebinarModel, WebinarRegistrationModel, type WebinarDoc, type WebinarRegistrationDoc } from '../../models/Webinar';
+import { CreatorProfileModel } from '../../models/CreatorProfile';
+import { OrderModel } from '../../models/Order';
 import { uniqueSlug } from '../../lib/slug';
 import { recordAudit } from '../../lib/audit';
 import { canAcceptPayments } from '../payments/connect.service';
+import { enqueueEmail, enqueueJob } from '../../lib/jobs';
+import { registerJobHandler } from '../../lib/jobRunner';
+import { notifyCreatorNewSale, resolveCreatorBranding } from '../../lib/creatorNotifications';
+import { upsertCustomerLead } from '../leads/leads.service';
+import { triggerFlows } from '../flows/flows.service';
 
 type SlotInput = { startsAt: string | Date };
 
@@ -60,6 +72,8 @@ function publicWebinar(w: WebinarDoc) {
     customFields: mapCustomFields(w),
     confirmSubject: w.confirmSubject,
     confirmBody: w.confirmBody,
+    meetingUrl: w.meetingUrl ?? '',
+    replayUrl: w.replayUrl ?? '',
     status: w.status,
     registrationCount: w.registrationCount,
     grossCents: w.grossCents,
@@ -73,7 +87,7 @@ const WEBINAR_PATCH_FIELDS = [
   'thumbnailStyle', 'thumbnailButtonLabel', 'bottomTitle', 'ctaLabel',
   'durationMin', 'timezone', 'calendarIntegration', 'capacityPerSlot',
   'reminderEnabled', 'reminderHoursBefore',
-  'confirmSubject', 'confirmBody',
+  'confirmSubject', 'confirmBody', 'meetingUrl', 'replayUrl',
 ] as const;
 
 async function owned(creatorId: string, id: string): Promise<WebinarDoc> {
@@ -174,4 +188,422 @@ export async function setWebinarStatus(creatorId: string, id: string, status: 'd
   webinar.status = status;
   await webinar.save();
   return publicWebinar(webinar);
+}
+
+function effectivePriceCents(w: WebinarDoc): number {
+  if (w.discountEnabled && w.discountPriceCents > 0) return w.discountPriceCents;
+  return w.priceCents;
+}
+
+function whenText(startAt: Date, zone: string): string {
+  return DateTime.fromJSDate(startAt, { zone: zone || 'UTC' }).toFormat("ccc, LLL d 'at' h:mm a ZZZZ");
+}
+
+async function publishedWebinar(username: string, slug: string) {
+  const profile = await CreatorProfileModel.findOne({ username: username.toLowerCase() });
+  if (!profile) throw AppError.notFound('Webinar not found');
+  const webinar = await WebinarModel.findOne({ creatorId: profile.userId, slug: slug.toLowerCase(), status: 'published' });
+  if (!webinar) throw AppError.notFound('Webinar not found');
+  return { profile, webinar, creatorId: String(profile.userId) };
+}
+
+function validateCustomFieldAnswers(
+  webinar: WebinarDoc,
+  values: Record<string, string> = {},
+): void {
+  for (const field of webinar.customFields) {
+    const key = String(field._id);
+    const val = (values[key] ?? values[field.label] ?? '').trim();
+    if (field.required && !val) throw AppError.badRequest(`Please fill in: ${field.label}`);
+  }
+}
+
+async function slotSeatCounts(webinarId: Types.ObjectId, slotIds: Types.ObjectId[]) {
+  if (!slotIds.length) return new Map<string, number>();
+  const rows = await WebinarRegistrationModel.aggregate([
+    {
+      $match: {
+        webinarId,
+        slotId: { $in: slotIds },
+        status: { $in: ['confirmed', 'pending_payment'] },
+      },
+    },
+    { $group: { _id: '$slotId', count: { $sum: 1 } } },
+  ]);
+  return new Map(rows.map((r) => [String(r._id), r.count as number]));
+}
+
+/** Published webinars for a storefront. */
+export async function listPublicWebinars(creatorId: string) {
+  const items = await WebinarModel.find({ creatorId, status: 'published' }).sort({ createdAt: -1 });
+  return items.map((w) => ({
+    id: w.id,
+    title: w.title,
+    slug: w.slug,
+    shortDescription: w.shortDescription,
+    priceCents: effectivePriceCents(w),
+    currency: w.currency,
+    coverImageUrl: w.coverImageUrl,
+    ctaLabel: w.ctaLabel || 'Secure Your Spot',
+    durationMin: w.durationMin,
+    type: 'webinar' as const,
+  }));
+}
+
+/** Upcoming slots with remaining capacity for the public registration page. */
+export async function getWebinarAvailability(username: string, slug: string) {
+  const { webinar } = await publishedWebinar(username, slug);
+  const now = new Date();
+  const upcoming = webinar.slots.filter((s) => s.startsAt.getTime() > now.getTime());
+  const counts = await slotSeatCounts(webinar._id, upcoming.map((s) => s._id as Types.ObjectId));
+
+  return {
+    id: webinar.id,
+    title: webinar.title,
+    slug: webinar.slug,
+    shortDescription: webinar.shortDescription,
+    description: webinar.description,
+    priceCents: effectivePriceCents(webinar),
+    currency: webinar.currency,
+    durationMin: webinar.durationMin,
+    timezone: webinar.timezone,
+    customFields: mapCustomFields(webinar),
+    slots: upcoming
+      .map((s) => {
+        const taken = counts.get(String(s._id)) ?? 0;
+        const seatsLeft = Math.max(0, webinar.capacityPerSlot - taken);
+        return {
+          id: String(s._id),
+          startsAt: s.startsAt.toISOString(),
+          seatsLeft,
+        };
+      })
+      .filter((s) => s.seatsLeft > 0),
+  };
+}
+
+/** Register for a webinar slot (free confirms immediately; paid returns checkout URL). */
+export async function createWebinarRegistration(input: {
+  username: string;
+  slug: string;
+  slotId: string;
+  email: string;
+  name?: string;
+  customFieldValues?: Record<string, string>;
+  provider?: 'stripe' | 'paypal';
+}) {
+  const { webinar, creatorId } = await publishedWebinar(input.username, input.slug);
+  validateCustomFieldAnswers(webinar, input.customFieldValues);
+
+  const slot = webinar.slots.find((s) => String(s._id) === input.slotId);
+  if (!slot) throw AppError.badRequest('Please pick a valid session time');
+  if (slot.startsAt.getTime() <= Date.now()) throw AppError.conflict('That session has already started');
+
+  const counts = await slotSeatCounts(webinar._id, [slot._id as Types.ObjectId]);
+  const taken = counts.get(String(slot._id)) ?? 0;
+  if (taken >= webinar.capacityPerSlot) throw AppError.conflict('That session is full');
+
+  const paid = effectivePriceCents(webinar) > 0;
+  const buyerEmail = input.email.toLowerCase().trim();
+
+  let registration: WebinarRegistrationDoc;
+  try {
+    registration = await WebinarRegistrationModel.create({
+      creatorId,
+      webinarId: webinar._id,
+      slotId: slot._id,
+      buyerEmail,
+      buyerName: input.name ?? '',
+      customFieldAnswers: input.customFieldValues ?? {},
+      startsAt: slot.startsAt,
+      timezone: webinar.timezone,
+      status: paid ? 'pending_payment' : 'confirmed',
+    });
+  } catch (err) {
+    if (typeof err === 'object' && err !== null && (err as { code?: number }).code === 11000) {
+      throw AppError.conflict('You are already registered for this session');
+    }
+    throw err;
+  }
+
+  // Race-safe capacity guard (same pattern as bookings).
+  const seatRank = await WebinarRegistrationModel.countDocuments({
+    webinarId: webinar._id,
+    slotId: slot._id,
+    status: { $in: ['confirmed', 'pending_payment'] },
+    _id: { $lte: registration._id },
+  });
+  if (seatRank > webinar.capacityPerSlot) {
+    await WebinarRegistrationModel.deleteOne({ _id: registration._id });
+    throw AppError.conflict('That session is full');
+  }
+
+  if (!paid) {
+    await WebinarModel.updateOne({ _id: webinar._id }, { $inc: { registrationCount: 1 } });
+    await sendWebinarConfirmation(registration, webinar);
+    await upsertCustomerLead(creatorId, buyerEmail, input.name).catch(() => {});
+    recordAudit({
+      action: 'webinar.registered_free',
+      actorType: 'anonymous',
+      creatorId,
+      targetType: 'webinar',
+      targetId: webinar.id,
+    });
+    return { status: 'confirmed' as const, manageToken: registration.manageToken };
+  }
+
+  const { createWebinarCheckoutSession } = await import('../checkout/checkout.service');
+  const checkout = await createWebinarCheckoutSession({
+    creatorId,
+    registrationId: registration.id,
+    title: webinar.title,
+    priceCents: effectivePriceCents(webinar),
+    currency: webinar.currency,
+    email: buyerEmail,
+    username: input.username,
+    provider: input.provider ?? 'stripe',
+  });
+  registration.stripeCheckoutSessionId = checkout.sessionId;
+  await registration.save();
+  return { status: 'pending_payment' as const, checkoutUrl: checkout.url };
+}
+
+export async function sendWebinarConfirmation(registration: WebinarRegistrationDoc, webinar: WebinarDoc) {
+  const branding = await resolveCreatorBranding(String(registration.creatorId)).catch(() => ({
+    displayName: 'CreatorStore',
+    username: '',
+    replyTo: undefined as string | undefined,
+  }));
+  const portalUrl = branding.username
+    ? `${env.APP_URL}/${branding.username}/account?email=${encodeURIComponent(registration.buyerEmail)}`
+    : undefined;
+  const manageUrl = `${env.APP_URL}/webinar/${registration.manageToken}`;
+  const wt = whenText(registration.startsAt, registration.timezone);
+  const meetingUrl = webinar.meetingUrl || undefined;
+  const mailOpts = { fromName: branding.displayName, replyTo: branding.replyTo };
+
+  if (webinar.confirmSubject?.trim() || webinar.confirmBody?.trim()) {
+    const personalise = (t: string) =>
+      t
+        .replace(/\[Webinar Title\]/g, webinar.title)
+        .replace(/\[Product Name\]/g, webinar.title)
+        .replace(/\[When\]/g, wt)
+        .replace(/\[Meeting Link\]/g, meetingUrl ?? '')
+        .replace(/\[Manage Link\]/g, manageUrl)
+        .replace(/\[My Username\]/g, branding.username ?? '');
+    const subject = personalise(webinar.confirmSubject?.trim() || `Webinar confirmed: ${webinar.title}`);
+    const bodyText = personalise(
+      webinar.confirmBody?.trim() ||
+        `You're registered for ${webinar.title}.\n\n${wt}` +
+          (meetingUrl ? `\n\nJoin link: ${meetingUrl}` : '') +
+          `\n\nManage your registration: ${manageUrl}`,
+    );
+    await enqueueEmail(
+      registration.buyerEmail,
+      'broadcast',
+      {
+        subject,
+        bodyText: bodyText + (portalUrl ? `\n\nView all your purchases: ${portalUrl}` : ''),
+        fromName: branding.displayName,
+      },
+      mailOpts,
+    );
+  } else {
+    await enqueueEmail(
+      registration.buyerEmail,
+      'booking_confirmation',
+      {
+        title: webinar.title,
+        whenText: wt,
+        meetingUrl,
+        manageUrl,
+        portalUrl,
+        creatorName: branding.displayName,
+      },
+      mailOpts,
+    );
+  }
+
+  if (webinar.reminderEnabled) await scheduleWebinarReminder(registration, webinar);
+  await triggerFlows(String(registration.creatorId), registration.buyerEmail, 'purchase').catch(() => {});
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+export async function scheduleWebinarReminder(registration: WebinarRegistrationDoc, webinar: WebinarDoc) {
+  const start = registration.startsAt.getTime();
+  const offsetHours = Math.max(1, webinar.reminderHoursBefore ?? 24);
+  const runAt = new Date(start - offsetHours * HOUR_MS);
+  if (runAt.getTime() <= Date.now()) return;
+  await enqueueJob(
+    'webinar_reminder',
+    { registrationId: registration.id },
+    { runAt, dedupeKey: `webinar_reminder:${registration.id}` },
+  ).catch((err) => {
+    logger.warn({ err, registrationId: registration.id }, 'Failed to schedule webinar reminder');
+  });
+}
+
+async function processWebinarReminder(payload: Record<string, unknown>): Promise<void> {
+  const registration = await WebinarRegistrationModel.findById(String(payload.registrationId ?? ''));
+  if (!registration || registration.status !== 'confirmed' || registration.startsAt.getTime() <= Date.now()) return;
+  const webinar = await WebinarModel.findById(registration.webinarId);
+  if (!webinar) return;
+  const mins = Math.round((registration.startsAt.getTime() - Date.now()) / 60000);
+  const startsInText =
+    mins >= 90 ? `in about ${Math.round(mins / 60)} hours` : mins >= 45 ? 'in about an hour' : `in ${Math.max(1, mins)} minutes`;
+  const branding = await resolveCreatorBranding(String(registration.creatorId)).catch(() => ({
+    displayName: 'CreatorStore',
+    username: '',
+    replyTo: undefined as string | undefined,
+  }));
+  const portalUrl = branding.username
+    ? `${env.APP_URL}/${branding.username}/account?email=${encodeURIComponent(registration.buyerEmail)}`
+    : undefined;
+  await enqueueEmail(
+    registration.buyerEmail,
+    'booking_reminder',
+    {
+      title: webinar.title,
+      whenText: whenText(registration.startsAt, registration.timezone),
+      startsInText,
+      meetingUrl: webinar.meetingUrl || undefined,
+      manageUrl: `${env.APP_URL}/webinar/${registration.manageToken}`,
+      portalUrl,
+      creatorName: branding.displayName,
+    },
+    { fromName: branding.displayName, replyTo: branding.replyTo },
+  );
+}
+
+export function registerWebinarJobs(): void {
+  registerJobHandler('webinar_reminder', processWebinarReminder);
+}
+
+/** Confirm a paid registration from checkout (webhook / success-page fulfilment). */
+export async function confirmWebinarFromSession(session: Stripe.Checkout.Session, accountId?: string): Promise<void> {
+  const registrationId = session.metadata?.registrationId;
+  if (!registrationId) return;
+  const registration = await WebinarRegistrationModel.findById(registrationId);
+  if (!registration || registration.status === 'confirmed') return;
+
+  const webinar = await WebinarModel.findById(registration.webinarId);
+  if (!webinar) return;
+
+  let order = await OrderModel.findOne({ stripeCheckoutSessionId: session.id });
+  if (!order) {
+    order = await OrderModel.create({
+      creatorId: registration.creatorId,
+      productId: registration.webinarId,
+      buyerEmail: registration.buyerEmail,
+      buyerName: registration.buyerName ?? '',
+      amountCents: session.amount_total ?? effectivePriceCents(webinar),
+      currency: session.currency ?? webinar.currency,
+      applicationFeeCents: typeof session.metadata?.fee === 'string' ? Number(session.metadata.fee) : 0,
+      stripeCheckoutSessionId: session.id,
+      stripePaymentIntentId: typeof session.payment_intent === 'string' ? session.payment_intent : undefined,
+      stripeAccountId: accountId,
+      paymentProvider: accountId?.startsWith('paypal') ? 'paypal' : 'stripe',
+      status: 'paid',
+      fulfilmentStatus: 'fulfilled',
+      paidAt: new Date(),
+    });
+  }
+
+  registration.status = 'confirmed';
+  registration.set('orderId', order._id);
+  await registration.save();
+  await WebinarModel.updateOne({ _id: webinar._id }, { $inc: { registrationCount: 1, grossCents: order.amountCents } });
+
+  await sendWebinarConfirmation(registration, webinar);
+  await upsertCustomerLead(String(registration.creatorId), registration.buyerEmail, registration.buyerName).catch(() => {});
+
+  const amount = new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: order.currency.toUpperCase(),
+  }).format(order.amountCents / 100);
+  await notifyCreatorNewSale(String(registration.creatorId), {
+    itemTitle: webinar.title,
+    itemKind: 'product',
+    amount,
+    buyerEmail: registration.buyerEmail,
+    buyerName: registration.buyerName,
+    orderId: order.id,
+  }).catch(() => {});
+
+  recordAudit({
+    action: 'webinar.confirmed_paid',
+    actorType: 'system',
+    creatorId: String(registration.creatorId),
+    targetType: 'webinar',
+    targetId: webinar.id,
+  });
+}
+
+export async function getRegistrationByToken(token: string) {
+  const registration = await WebinarRegistrationModel.findOne({ manageToken: token });
+  if (!registration) throw AppError.notFound('Registration not found');
+  const webinar = await WebinarModel.findById(registration.webinarId);
+  if (!webinar) throw AppError.notFound('Webinar not found');
+
+  const now = Date.now();
+  const start = registration.startsAt.getTime();
+  let displayStatus: string = registration.status;
+  if (registration.status === 'confirmed') {
+    if (start <= now && now < start + webinar.durationMin * 60_000) displayStatus = 'in progress';
+    else if (now >= start + webinar.durationMin * 60_000) displayStatus = 'ended';
+  }
+
+  return {
+    id: registration.id,
+    title: webinar.title,
+    startsAt: registration.startsAt.toISOString(),
+    timezone: registration.timezone,
+    durationMin: webinar.durationMin,
+    status: registration.status,
+    displayStatus,
+    meetingUrl: registration.status === 'confirmed' ? webinar.meetingUrl || '' : '',
+    replayUrl: webinar.replayUrl || '',
+    whenText: whenText(registration.startsAt, registration.timezone),
+  };
+}
+
+export async function cancelRegistrationByToken(token: string) {
+  const registration = await WebinarRegistrationModel.findOne({ manageToken: token });
+  if (!registration || registration.status === 'cancelled') throw AppError.notFound('Registration not found');
+  const wasConfirmed = registration.status === 'confirmed';
+  registration.status = 'cancelled';
+  registration.cancelledAt = new Date();
+  await registration.save();
+  if (wasConfirmed) {
+    await WebinarModel.updateOne({ _id: registration.webinarId }, { $inc: { registrationCount: -1 } });
+  }
+  return { ok: true };
+}
+
+export async function cancelRegistrationByCheckoutSession(sessionId: string) {
+  const registration = await WebinarRegistrationModel.findOne({ stripeCheckoutSessionId: sessionId });
+  if (!registration || registration.status === 'cancelled') return;
+  registration.status = 'cancelled';
+  registration.cancelledAt = new Date();
+  await registration.save();
+}
+
+export async function listWebinarRegistrations(creatorId: string) {
+  const rows = await WebinarRegistrationModel.find({ creatorId })
+    .sort({ startsAt: -1 })
+    .limit(500);
+  const webinarIds = [...new Set(rows.map((r) => String(r.webinarId)))];
+  const webinars = await WebinarModel.find({ _id: { $in: webinarIds } }, 'title slug').lean();
+  const titles = new Map(webinars.map((w) => [String(w._id), w.title]));
+
+  return rows.map((r) => ({
+    id: r.id,
+    webinarId: String(r.webinarId),
+    webinarTitle: titles.get(String(r.webinarId)) ?? 'Webinar',
+    buyerEmail: r.buyerEmail,
+    buyerName: r.buyerName ?? '',
+    startsAt: r.startsAt.toISOString(),
+    status: r.status,
+  }));
 }

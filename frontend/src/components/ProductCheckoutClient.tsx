@@ -69,7 +69,7 @@ export function ProductCheckoutClient({
   const [orderBump, setOrderBump] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [methods, setMethods] = useState<{ card: boolean; paypal: boolean }>({ card: true, paypal: false });
+  const [methods, setMethods] = useState<{ card: boolean; paypal: boolean }>({ card: false, paypal: false });
   const formRef = useRef<HTMLFormElement>(null);
   const [pricing, setPricing] = useState<{
     finalCents: number;
@@ -81,6 +81,13 @@ export function ProductCheckoutClient({
   } | null>(null);
 
   const isFree = product.priceCents <= 0;
+  const isRecurring =
+    product.billingInterval === 'month' ||
+    product.billingInterval === 'year' ||
+    (product.paymentPlanEnabled && product.paymentPlanInstallments > 1);
+  const paypalAllowed = !isRecurring && methods.paypal;
+  const cardAllowed = methods.card;
+  const canCheckout = isFree || cardAllowed || paypalAllowed;
   const soldOut = pricing?.soldOut ?? (product.quantityRemaining === 0);
 
   const refreshPricing = useCallback(async () => {
@@ -183,6 +190,10 @@ export function ProductCheckoutClient({
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!isFree && !cardAllowed && paypalAllowed) {
+      void startCheckout('paypal');
+      return;
+    }
     void startCheckout('card');
   }
 
@@ -358,16 +369,28 @@ export function ProductCheckoutClient({
 
             {error && <p className="text-sm font-medium text-red-600">{error}</p>}
 
+            {!isFree && !canCheckout && (
+              <p className="rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-sm text-amber-800">
+                This creator hasn&apos;t finished payment setup yet. Check back soon or contact them directly.
+              </p>
+            )}
+
+            {(isFree || cardAllowed || (!cardAllowed && paypalAllowed)) && (
             <button
               type="submit"
-              disabled={busy}
+              disabled={busy || (!isFree && !canCheckout)}
               className="w-full rounded-xl py-3.5 text-sm font-bold uppercase tracking-wide text-white disabled:opacity-60"
               style={{ backgroundColor: ACCENT }}
             >
-              {busy ? 'Processing…' : product.ctaLabel || (isFree ? 'Download' : 'Purchase')}
+              {busy
+                ? 'Processing…'
+                : !isFree && !cardAllowed && paypalAllowed
+                  ? 'Pay with PayPal'
+                  : product.ctaLabel || (isFree ? 'Download' : 'Purchase')}
             </button>
+            )}
 
-            {!isFree && methods.paypal && (
+            {!isFree && cardAllowed && paypalAllowed && (
               <>
                 <div className="flex items-center gap-3 py-0.5 text-xs font-medium text-neutral-400">
                   <span className="h-px flex-1 bg-line" /> or <span className="h-px flex-1 bg-line" />

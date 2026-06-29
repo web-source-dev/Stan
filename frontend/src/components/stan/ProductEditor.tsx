@@ -123,6 +123,7 @@ function DownloadToggle({ value, onChange }: { value: boolean; onChange: (v: boo
 
 export interface ProductEditorState {
   id?: string;
+  slug?: string;
   title: string;
   priceDollars: string;
   discountPriceDollars: string;
@@ -1048,9 +1049,9 @@ export function ProductEditor({
       if (id) {
         await authedRequest(`/api/products/${id}`, { method: 'PATCH', body });
       } else {
-        const res = await authedRequest<{ product: { id: string } }>('/api/products', { method: 'POST', body });
+        const res = await authedRequest<{ product: { id: string; slug?: string } }>('/api/products', { method: 'POST', body });
         id = res.product.id;
-        setForm((f) => ({ ...f, id }));
+        setForm((f) => ({ ...f, id, slug: res.product.slug ?? f.slug }));
       }
       if (publish && id) {
         await authedRequest(`/api/products/${id}/publish`, { method: 'POST' });
@@ -2127,14 +2128,19 @@ export function ProductEditor({
                   className="w-24 pe-input"
                 />
               </div>
-              {form.id && form.affiliate.enabled && (
+              {form.id && form.affiliate.enabled && storeHandle && form.slug && (
                 <p className="mt-3 rounded-lg bg-[#f0f1f6] px-3 py-2 text-xs text-[#6b7280]">
                   Share link:{' '}
                   <code className="text-[#6355fa]">
-                    /product/{form.id ? '' : ''}…?aff=partner
+                    /{storeHandle}/product/{form.slug}?aff=YOUR_USERNAME
                   </code>
                   <br />
                   Affiliates earn {form.affiliate.commissionPercent}% when buyers purchase via their link.
+                </p>
+              )}
+              {form.id && form.affiliate.enabled && (!storeHandle || !form.slug) && (
+                <p className="mt-3 text-xs text-[#6b7280]">
+                  Publish your store and product to generate an affiliate share link.
                 </p>
               )}
               </FeatureLock>

@@ -52,9 +52,12 @@ const webinarBody = z.object({
   customFields: z.array(customFieldSchema).max(15).optional(),
   confirmSubject: z.string().max(200).optional(),
   confirmBody: z.string().max(5000).optional(),
+  meetingUrl: z.string().url().max(2000).optional().or(z.literal('')),
+  replayUrl: z.string().url().max(2000).optional().or(z.literal('')),
 });
 
 webinarsRouter.get('/', asyncHandler(async (req, res) => res.json({ webinars: await service.listWebinars(req.user!.id) })));
+webinarsRouter.get('/registrations', asyncHandler(async (req, res) => res.json({ registrations: await service.listWebinarRegistrations(req.user!.id) })));
 webinarsRouter.post('/', validate({ body: webinarBody }), asyncHandler(async (req, res) => res.status(201).json({ webinar: await service.createWebinar(req.user!.id, req.body) })));
 webinarsRouter.get('/:id', validate({ params: idParam }), asyncHandler(async (req, res) => res.json({ webinar: await service.getWebinar(req.user!.id, String(req.params.id)) })));
 webinarsRouter.patch('/:id', validate({ params: idParam, body: webinarBody.partial() }), asyncHandler(async (req, res) => res.json({ webinar: await service.updateWebinar(req.user!.id, String(req.params.id), req.body) })));

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { ApiException } from '@/lib/api';
 import { DashboardShell } from '@/components/DashboardShell';
@@ -254,8 +255,12 @@ function RuleModal({ open, initial, media, mediaLoading, onClose, onSave }: {
 
 function AutoDMView({ initialRules, initialConnected }: { initialRules?: Rule[]; initialConnected?: boolean } = {}) {
   const { authedRequest } = useAuth();
+  const searchParams = useSearchParams();
   const [rules, setRules] = useState<Rule[] | null>(initialRules ?? null);
   const [connected, setConnected] = useState(initialConnected ?? false);
+  const [liveMode, setLiveMode] = useState(false);
+  const [accountName, setAccountName] = useState('');
+  const [oauthNotice, setOauthNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Rule | null>(null);
   const [testResult, setTestResult] = useState<{ id: string; text: string; ok: boolean } | null>(null);
@@ -269,8 +274,13 @@ function AutoDMView({ initialRules, initialConnected }: { initialRules?: Rule[];
   }, [authedRequest]);
   const loadConnection = useCallback(async () => {
     try {
-      const res = await authedRequest<{ integrations: { provider: string; connected: boolean }[] }>('/api/integrations');
-      setConnected(res.integrations.find((i) => i.provider === 'instagram')?.connected ?? false);
+      const res = await authedRequest<{
+        integrations: { provider: string; connected: boolean; liveMode?: boolean; accountName?: string }[];
+      }>('/api/integrations');
+      const ig = res.integrations.find((i) => i.provider === 'instagram');
+      setConnected(ig?.connected ?? false);
+      setLiveMode(Boolean(ig?.liveMode));
+      setAccountName(ig?.accountName ?? '');
     } catch { /* ignore */ }
   }, [authedRequest]);
   const loadMedia = useCallback(async () => {
@@ -286,6 +296,18 @@ function AutoDMView({ initialRules, initialConnected }: { initialRules?: Rule[];
     void load();
     void loadConnection();
   }, [load, loadConnection, initialRules]);
+
+  useEffect(() => {
+    const status = searchParams.get('instagram');
+    if (!status) return;
+    if (status === 'connected') {
+      setOauthNotice({ tone: 'success', text: 'Instagram connected — your auto-replies will deliver live when someone DMs or comments your keyword.' });
+      void loadConnection();
+    } else if (status === 'error') {
+      setOauthNotice({ tone: 'error', text: 'Instagram connection failed. Check your Meta app redirect URI and try again.' });
+    }
+    window.history.replaceState({}, '', '/dashboard/autodm');
+  }, [searchParams, loadConnection]);
 
   async function connectInstagram() {
     const res = await authedRequest<{ authorizeUrl: string }>('/api/integrations/instagram/connect', { method: 'POST' });
@@ -374,17 +396,35 @@ function AutoDMView({ initialRules, initialConnected }: { initialRules?: Rule[];
       </div>
 
       {/* Instagram connection */}
+      {oauthNotice && (
+        <Alert kind={oauthNotice.tone === 'success' ? 'success' : 'error'} className="mt-5">
+          {oauthNotice.text}
+        </Alert>
+      )}
       <div className={cn(CARD, 'mt-5 flex flex-wrap items-center justify-between gap-4')}>
         <div className="flex items-center gap-3">
           <IgLogo size={40} />
           <div>
-            <div className="font-bold text-[#1a1c3a]">Instagram</div>
-            <div className="text-sm text-neutral-500">{connected ? 'Connected — your auto-replies are live.' : 'Connect your account to activate auto-replies.'}</div>
+            <div className="font-bold text-[#1a1c3a]">
+              Instagram{accountName ? ` · @${accountName}` : ''}
+            </div>
+            <div className="text-sm text-neutral-500">
+              {connected && liveMode
+                ? 'Live — auto-replies deliver via Instagram when followers use your keywords.'
+                : connected
+                  ? 'Demo connected — add Meta app keys to your server env for live delivery.'
+                  : 'Connect your account to activate auto-replies.'}
+            </div>
           </div>
         </div>
         {connected ? (
           <div className="flex items-center gap-3">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-success-50 px-4 py-2 text-sm font-bold text-success-700"><IconCheckCircle size={16} /> Connected</span>
+            <span className={cn(
+              'inline-flex items-center gap-1.5 rounded-full px-4 py-2 text-sm font-bold',
+              liveMode ? 'bg-success-50 text-success-700' : 'bg-amber-50 text-amber-800',
+            )}>
+              <IconCheckCircle size={16} /> {liveMode ? 'Live' : 'Demo'}
+            </span>
             <button onClick={disconnectInstagram} className="text-sm font-semibold text-neutral-500 transition hover:text-danger-600">Disconnect</button>
           </div>
         ) : (

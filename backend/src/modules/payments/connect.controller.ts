@@ -3,8 +3,12 @@ import { z } from 'zod';
 import { AppError } from '../../utils/AppError';
 import * as connect from './connect.service';
 
+const onboardBody = z.object({ returnBase: z.string().url().max(200).optional() });
+
 export async function onboard(req: Request, res: Response) {
-  const { url } = await connect.createOnboardingLink(req.user!.id);
+  const parsed = onboardBody.safeParse(req.body ?? {});
+  const returnBase = parsed.success ? parsed.data.returnBase : undefined;
+  const { url } = await connect.createOnboardingLink(req.user!.id, returnBase);
   res.json({ url });
 }
 

@@ -8,6 +8,7 @@ export type BlockType =
   | 'product'
   | 'course'
   | 'booking'
+  | 'webinar'
   | 'leadMagnet'
   | 'emailCapture'
   | 'links'
